@@ -94,20 +94,17 @@ async function callOpenAI(params: {
     messages: params.messages,
   };
 
-  // GPT-5.2 specific parameters - use proper nested structure
+  // GPT-5.2 specific parameters
   const isReasoningModel = params.model.includes("gpt-5") || params.model.includes("o1") || params.model.includes("o3");
   
   if (isReasoningModel && params.reasoningEffort && params.reasoningEffort !== "none") {
-    body.reasoning = {
-      effort: params.reasoningEffort,
-      summary: "auto", // Request reasoning summary
-    };
+    // Use flat reasoning_effort parameter (string value)
+    body.reasoning_effort = params.reasoningEffort;
   }
   
   if (params.verbosity !== undefined) {
-    body.text = {
-      verbosity: params.verbosity,
-    };
+    // Use flat verbosity parameter (string value)
+    body.verbosity = params.verbosity;
   }
 
   // temperature/top_p only supported when NOT using reasoning
