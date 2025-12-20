@@ -20,6 +20,7 @@ const DEFAULT_MODEL = "gpt-5.2-2025-12-11";
 type Draft = {
   text: string;
   autoSend?: boolean;
+  forceNewSession?: boolean;
 };
 
 const REASONING_EFFORTS: Array<{ value: ReasoningEffort; label: string }> = [
@@ -673,6 +674,9 @@ export default function Home() {
               setSidebarOpen(false);
             }}
             onStartDraft={(d) => {
+              if (d.forceNewSession) {
+                setCurrentSessionId(null);
+              }
               setDraft(d);
               setActiveTab("chat");
               setSidebarOpen(false);
@@ -843,8 +847,9 @@ function HomeView(props: {
       setYtLoading(true);
       setYtError("");
       try {
+        const refresh = ytReloadNonce > 0 ? `&refresh=${encodeURIComponent(String(ytReloadNonce))}` : "";
         const res = await authedFetch(
-          `/api/youtube/recommendations?category=${encodeURIComponent(category)}&maxResults=12`,
+          `/api/youtube/recommendations?category=${encodeURIComponent(category)}&maxResults=12${refresh}`,
           { method: "GET" }
         );
         const json = await res.json();
@@ -869,7 +874,7 @@ function HomeView(props: {
     const q = topic.trim();
     if (!q) return;
     const prompt = `다음 주제로 대화를 시작하고 싶어: "${q}"\n\n1) 먼저 내가 고르기 쉬운 질문 5개를 제안해줘.\n2) 내가 선택하면 그 질문부터 대화를 시작해줘.`;
-    props.onStartDraft({ text: prompt, autoSend: true });
+    props.onStartDraft({ text: prompt, autoSend: true, forceNewSession: true });
     setTopic("");
   };
 
@@ -877,7 +882,7 @@ function HomeView(props: {
     const url = youtubeUrl.trim();
     if (!url) return;
     // Keep the user-visible message minimal (the URL). ChatView will auto-expand it into an analysis prompt for the model.
-    props.onStartDraft({ text: url, autoSend: true });
+    props.onStartDraft({ text: url, autoSend: true, forceNewSession: true });
     setYoutubeUrl("");
     setError("");
   };
@@ -1002,7 +1007,10 @@ function HomeView(props: {
               {CATEGORIES.map((c) => (
                 <button
                   key={c.id}
-                  onClick={() => setCategory(c.id)}
+                  onClick={() => {
+                    setCategory(c.id);
+                    setYtReloadNonce(0);
+                  }}
                   className={`rounded-full border px-3 py-1.5 text-xs font-medium transition ${
                     category === c.id
                       ? "border-[var(--accent)] bg-[var(--accent)]/15 text-[var(--foreground)]"
@@ -1064,7 +1072,7 @@ function HomeView(props: {
                   {ytItems.map((v) => (
                     <button
                       key={v.videoId}
-                      onClick={() => props.onStartDraft({ text: v.url, autoSend: true })}
+                      onClick={() => props.onStartDraft({ text: v.url, autoSend: true, forceNewSession: true })}
                       className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4 text-left transition hover:border-[var(--border-hover)] hover:bg-[var(--card-hover)]"
                     >
                       <div className="flex gap-3">
@@ -1102,7 +1110,7 @@ function HomeView(props: {
               {starters.map((s) => (
                 <button
                   key={s.label}
-                  onClick={() => props.onStartDraft({ text: s.prompt, autoSend: true })}
+                  onClick={() => props.onStartDraft({ text: s.prompt, autoSend: true, forceNewSession: true })}
                   className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4 text-left transition hover:border-[var(--border-hover)] hover:bg-[var(--card-hover)]"
                 >
                   <div className="text-sm font-medium">{s.label}</div>
