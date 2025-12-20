@@ -17,6 +17,11 @@ type Verbosity = "low" | "medium" | "high";
 
 const DEFAULT_MODEL = "gpt-5.2-2025-12-11";
 
+type Draft = {
+  text: string;
+  autoSend?: boolean;
+};
+
 const REASONING_EFFORTS: Array<{ value: ReasoningEffort; label: string }> = [
   { value: "none", label: "None" },
   { value: "low", label: "Low" },
@@ -109,6 +114,12 @@ const IconChat = () => (
   </svg>
 );
 
+const IconHome = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M3 9.5 12 3l9 6.5V21a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1V9.5z"></path>
+  </svg>
+);
+
 const IconKey = () => (
   <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="m21 2-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0 3 3L22 7l-3-3m-3.5 3.5L19 4"></path>
@@ -127,13 +138,6 @@ const IconSend = () => (
   <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <line x1="22" y1="2" x2="11" y2="13"></line>
     <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-  </svg>
-);
-
-const IconSettings = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <circle cx="12" cy="12" r="3"></circle>
-    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
   </svg>
 );
 
@@ -167,6 +171,46 @@ const IconClose = () => (
   </svg>
 );
 
+function extractYouTubeUrls(text: string): string[] {
+  if (!text) return [];
+  const out: string[] = [];
+  // Basic patterns: youtube.com/watch?v=, youtu.be/, youtube.com/shorts/
+  const patterns = [
+    /\bhttps?:\/\/(?:www\.)?youtube\.com\/watch\?[^ \n\r\t]*\bv=[a-zA-Z0-9_-]{6,}\b[^ \n\r\t]*/g,
+    /\bhttps?:\/\/(?:www\.)?youtu\.be\/[a-zA-Z0-9_-]{6,}\b[^ \n\r\t]*/g,
+    /\bhttps?:\/\/(?:www\.)?youtube\.com\/shorts\/[a-zA-Z0-9_-]{6,}\b[^ \n\r\t]*/g,
+  ];
+  for (const re of patterns) {
+    const matches = text.match(re) ?? [];
+    for (const m of matches) out.push(m);
+  }
+  // De-dupe while preserving order
+  return Array.from(new Set(out));
+}
+
+function buildYouTubeAnalyzePrompt(url: string, userText: string): string {
+  const original = userText.trim();
+  const isOnlyUrl = original === url;
+
+  return [
+    "You are a helpful assistant.",
+    "",
+    "We are discussing a YouTube video. Use web search as needed to access up-to-date information about the video.",
+    "",
+    `YouTube URL: ${url}`,
+    "",
+    "Deliverables:",
+    "1) Identify the video's title and channel (if available).",
+    "2) Summarize the video in 8–12 bullet points (Korean).",
+    "3) Create a timestamped outline (MM:SS) of key moments. If you cannot access an exact transcript, be explicit and avoid inventing timestamps—use sections instead.",
+    "4) Suggest 5 follow-up questions the user might ask (Korean).",
+    "",
+    isOnlyUrl
+      ? "After that, ask: '어떤 관점(요약/비판/투자/실생활)에 집중할까요?'"
+      : `User request/context (Korean):\n${original}\n\nFinish by asking a single clarifying question about what to focus on.`,
+  ].join("\n");
+}
+
 function generateId(): string {
   return Math.random().toString(36).substring(2) + Date.now().toString(36);
 }
@@ -188,8 +232,9 @@ function formatRelativeTime(date: Date): string {
 export default function Home() {
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
   const [session, setSession] = useState<Session | null>(null);
-  const [activeTab, setActiveTab] = useState<"chat" | "keys">("chat");
+  const [activeTab, setActiveTab] = useState<"home" | "chat" | "keys">("chat");
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [draft, setDraft] = useState<Draft | null>(null);
   
   // Chat state
   const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -509,6 +554,16 @@ export default function Home() {
         {/* Navigation */}
         <nav className="px-3">
           <NavButton 
+            active={activeTab === "home"} 
+            onClick={() => {
+              setActiveTab("home");
+              setSidebarOpen(false);
+            }}
+            icon={<IconHome />}
+          >
+            Home
+          </NavButton>
+          <NavButton 
             active={activeTab === "chat"} 
             onClick={() => {
               setActiveTab("chat");
@@ -531,7 +586,7 @@ export default function Home() {
         </nav>
 
         {/* Chat History */}
-        {activeTab === "chat" && sessions.length > 0 && (
+        {activeTab !== "keys" && sessions.length > 0 && (
           <div className="mt-4 flex-1 overflow-y-auto px-3">
             <div className="mb-2 px-2 text-xs font-medium text-[var(--muted)]">
               최근 대화
@@ -599,6 +654,31 @@ export default function Home() {
 
       {/* Main content */}
       <main className="flex flex-1 flex-col overflow-hidden">
+        {activeTab === "home" && (
+          <HomeView
+            recentSessions={sessions}
+            authedFetch={authedFetch}
+            onOpenSidebar={() => setSidebarOpen(true)}
+            onOpenSession={(id) => {
+              // Clear previous session messages from memory (optimization)
+              if (currentSessionId && currentSessionId !== id) {
+                setSessions((prev) =>
+                  prev.map((sess) =>
+                    sess.id === currentSessionId ? { ...sess, messages: [] } : sess
+                  )
+                );
+              }
+              setCurrentSessionId(id);
+              setActiveTab("chat");
+              setSidebarOpen(false);
+            }}
+            onStartDraft={(d) => {
+              setDraft(d);
+              setActiveTab("chat");
+              setSidebarOpen(false);
+            }}
+          />
+        )}
         {activeTab === "chat" && (
           <ChatView
             session={currentSession}
@@ -609,6 +689,8 @@ export default function Home() {
             setReasoningEffort={setReasoningEffort}
             setVerbosity={setVerbosity}
             authedFetch={authedFetch}
+            draft={draft}
+            onDraftConsumed={() => setDraft(null)}
             onMessagesChange={(messages) => {
               if (currentSessionId) {
                 updateSessionMessages(currentSessionId, messages);
@@ -682,6 +764,359 @@ async function optimizeImage(file: File): Promise<string> {
   });
 }
 
+function HomeView(props: {
+  recentSessions: ChatSession[];
+  authedFetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+  onOpenSidebar: () => void;
+  onOpenSession: (id: string) => void;
+  onStartDraft: (draft: Draft) => void;
+}) {
+  type Category = "all" | "finance" | "parenting" | "creator" | "it";
+
+  const CATEGORIES: Array<{ id: Category; label: string }> = [
+    { id: "all", label: "All" },
+    { id: "finance", label: "Finance/Investing" },
+    { id: "parenting", label: "Pregnancy/Baby" },
+    { id: "creator", label: "Creator" },
+    { id: "it", label: "IT/Dev" },
+  ];
+
+  const STARTERS: Record<Category, Array<{ label: string; prompt: string }>> = {
+    all: [
+      { label: "오늘 이야기할 주제 추천", prompt: "내가 대화 주제를 잘 못 정해. 오늘 이야기할 주제 5개만 추천해줘. (경제/출산/육아/릴스/일상 중에서)" },
+      { label: "최근 이슈 3줄 요약", prompt: "오늘 한국 경제/정책에서 중요한 이슈 5개를 3줄 요약으로 알려주고, 각각 '왜 중요한지'도 1줄씩 설명해줘." },
+      { label: "해야 할 일 정리", prompt: "지금 머리가 복잡해. 해야 할 일을 우선순위로 정리해줘. 먼저 질문 5개만 해서 정보 수집해줘." },
+    ],
+    finance: [
+      { label: "금리/환율 브리핑", prompt: "오늘 한국 기준으로 금리/환율/부동산 흐름을 빠르게 브리핑해줘. 핵심만 10줄 이내로." },
+      { label: "뉴스 읽는 법", prompt: "경제 뉴스를 볼 때 체크해야 할 관점(금리, 인플레, 실적, 정책)을 프레임워크로 만들어줘." },
+      { label: "영상 보고 질문 만들기", prompt: "내가 경제 유튜브를 볼 때 바로 써먹을 질문 템플릿 10개를 만들어줘." },
+    ],
+    parenting: [
+      { label: "D-14 준비 체크", prompt: "2주 뒤에 출산 예정이야. 출산 준비 체크리스트를 '오늘/이번 주/출산 직전'으로 나눠서 만들어줘." },
+      { label: "산모 컨디션 Q&A", prompt: "산모의 컨디션을 매일 점검할 수 있는 질문 리스트(간단 체크)와 위험 신호 기준을 정리해줘." },
+      { label: "신생아 2주 로드맵", prompt: "신생아 첫 2주를 버티기 위한 로드맵을 하루 단위로 제안해줘. (수면/수유/회복 중심)" },
+    ],
+    creator: [
+      { label: "릴스 아이디어 10개", prompt: "예비 부모/일상 주제로 인스타 릴스 아이디어 10개를 제안해줘. (훅/구성/촬영 컷/자막 톤)" },
+      { label: "릴스 스크립트", prompt: "릴스 30초짜리 스크립트를 3개 만들어줘. (감성/유머/정보형)" },
+      { label: "편집 가이드", prompt: "릴스 편집을 처음 하는 사람 기준으로, 컷 편집/자막/음악 선택의 규칙을 체크리스트로 알려줘." },
+    ],
+    it: [
+      { label: "이 앱 개선 아이디어", prompt: "이 채팅 앱을 더 쓰기 좋게 만들 UX 개선 아이디어 10개를 제안해줘. (모바일 중심)" },
+      { label: "성능 점검", prompt: "Next.js + Supabase 앱에서 모바일 성능을 떨어뜨리는 원인 Top 10과 점검 순서를 알려줘." },
+      { label: "보안 점검", prompt: "사용자 API 키를 저장하는 앱의 보안 체크리스트를 만들어줘. (클라이언트/서버/DB/RLS)" },
+    ],
+  };
+
+  const [topic, setTopic] = useState("");
+  const [youtubeUrl, setYoutubeUrl] = useState("");
+  const [category, setCategory] = useState<Category>("all");
+  const [error, setError] = useState<string>("");
+
+  type YouTubeRecItem = {
+    videoId: string;
+    url: string;
+    title: string;
+    channelTitle: string;
+    publishedAt: string | null;
+    thumbnail: string | null;
+    viewCount: number | null;
+    duration: string | null;
+  };
+
+  const [ytItems, setYtItems] = useState<YouTubeRecItem[]>([]);
+  const [ytLoading, setYtLoading] = useState(false);
+  const [ytError, setYtError] = useState<string>("");
+  const [ytReloadNonce, setYtReloadNonce] = useState(0);
+
+  const reloadYouTube = () => setYtReloadNonce((n) => n + 1);
+  const { authedFetch } = props;
+
+  const recent = props.recentSessions.slice(0, 6);
+  const starters = STARTERS[category] ?? STARTERS.all;
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const load = async () => {
+      setYtLoading(true);
+      setYtError("");
+      try {
+        const res = await authedFetch(
+          `/api/youtube/recommendations?category=${encodeURIComponent(category)}&maxResults=12`,
+          { method: "GET" }
+        );
+        const json = await res.json();
+        if (!res.ok) throw new Error(json?.error ?? "Failed to load YouTube recommendations");
+        const items = Array.isArray(json?.items) ? (json.items as YouTubeRecItem[]) : [];
+        if (!cancelled) setYtItems(items);
+      } catch (e) {
+        const message = e instanceof Error ? e.message : "Unexpected error";
+        if (!cancelled) setYtError(message);
+      } finally {
+        if (!cancelled) setYtLoading(false);
+      }
+    };
+
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [category, ytReloadNonce, authedFetch]);
+
+  const startTopic = () => {
+    const q = topic.trim();
+    if (!q) return;
+    const prompt = `다음 주제로 대화를 시작하고 싶어: "${q}"\n\n1) 먼저 내가 고르기 쉬운 질문 5개를 제안해줘.\n2) 내가 선택하면 그 질문부터 대화를 시작해줘.`;
+    props.onStartDraft({ text: prompt, autoSend: true });
+    setTopic("");
+  };
+
+  const startYoutube = () => {
+    const url = youtubeUrl.trim();
+    if (!url) return;
+    // Keep the user-visible message minimal (the URL). ChatView will auto-expand it into an analysis prompt for the model.
+    props.onStartDraft({ text: url, autoSend: true });
+    setYoutubeUrl("");
+    setError("");
+  };
+
+  return (
+    <div className="flex flex-1 flex-col overflow-hidden">
+      {/* Mobile header */}
+      <header className="flex items-center gap-3 border-b border-[var(--border)] px-3 py-2 sm:px-6 sm:py-3 lg:hidden">
+        <button
+          onClick={props.onOpenSidebar}
+          className="rounded-lg p-2 hover:bg-[var(--card)]"
+          aria-label="메뉴 열기"
+        >
+          <IconMenu />
+        </button>
+        <h1 className="text-lg font-semibold">Home</h1>
+      </header>
+
+      <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-6">
+        <div className="mx-auto max-w-3xl">
+          <div className="text-center">
+            <h1 className="text-2xl font-semibold sm:text-3xl">Understand vast knowledge like a genius</h1>
+            <p className="mt-2 text-sm text-[var(--muted)]">
+              대화를 시작하기 어렵다면, 먼저 <span className="font-medium">주제</span>나 <span className="font-medium">YouTube 링크</span>를 넣어보세요.
+            </p>
+          </div>
+
+          {/* Topic search */}
+          <div className="mt-6">
+            <div className="relative">
+              <input
+                value={topic}
+                onChange={(e) => setTopic(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    startTopic();
+                  }
+                }}
+                placeholder="주제 입력 (예: 금리 전망, 출산 준비, 릴스 아이디어)…"
+                className="w-full rounded-full border border-[var(--border)] bg-[var(--card)] px-5 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
+              />
+              <button
+                onClick={startTopic}
+                className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-[var(--accent)] px-4 py-2 text-xs font-medium text-white transition hover:bg-[var(--accent-hover)] disabled:opacity-40"
+                disabled={!topic.trim()}
+              >
+                시작
+              </button>
+            </div>
+          </div>
+
+          {/* Import actions */}
+          <div className="mt-8">
+            <div className="text-center text-xs text-[var(--muted)]">or import a source</div>
+            <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
+                <div className="text-sm font-medium">Paste</div>
+                <div className="mt-1 text-xs text-[var(--muted)]">YouTube · Web · Text</div>
+                <div className="mt-4 flex gap-2">
+                  <input
+                    value={youtubeUrl}
+                    onChange={(e) => setYoutubeUrl(e.target.value)}
+                    placeholder="YouTube URL 붙여넣기…"
+                    className="w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm outline-none transition focus:border-[var(--accent)]"
+                  />
+                  <button
+                    onClick={startYoutube}
+                    disabled={!youtubeUrl.trim()}
+                    className="whitespace-nowrap rounded-xl bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white transition hover:bg-[var(--accent-hover)] disabled:opacity-40"
+                  >
+                    분석
+                  </button>
+                </div>
+                {error && (
+                  <div className="mt-3 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
+                    {error}
+                  </div>
+                )}
+              </div>
+
+              <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5 opacity-70">
+                <div className="text-sm font-medium">Upload</div>
+                <div className="mt-1 text-xs text-[var(--muted)]">Video · Audio · PDF (coming soon)</div>
+                <div className="mt-4 text-xs text-[var(--muted)]">
+                  MVP에서는 YouTube URL 기반 분석부터 시작하고, 업로드/녹음은 다음 단계로 확장합니다.
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5 opacity-70">
+                <div className="text-sm font-medium">Live Record</div>
+                <div className="mt-1 text-xs text-[var(--muted)]">coming soon</div>
+              </div>
+              <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
+                <div className="text-sm font-medium">Open existing</div>
+                <div className="mt-1 text-xs text-[var(--muted)]">최근 대화/소스 열기</div>
+                <div className="mt-3 space-y-1">
+                  {recent.length === 0 ? (
+                    <div className="text-xs text-[var(--muted)]">아직 최근 대화가 없어요.</div>
+                  ) : (
+                    recent.map((s) => (
+                      <button
+                        key={s.id}
+                        onClick={() => props.onOpenSession(s.id)}
+                        className="w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-left text-sm transition hover:border-[var(--border-hover)]"
+                      >
+                        <div className="truncate font-medium">{s.title}</div>
+                        <div className="mt-0.5 text-xs text-[var(--muted)]">{formatRelativeTime(s.updatedAt)}</div>
+                      </button>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Categories + starters */}
+          <div className="mt-10">
+            <div className="flex flex-wrap justify-center gap-2">
+              {CATEGORIES.map((c) => (
+                <button
+                  key={c.id}
+                  onClick={() => setCategory(c.id)}
+                  className={`rounded-full border px-3 py-1.5 text-xs font-medium transition ${
+                    category === c.id
+                      ? "border-[var(--accent)] bg-[var(--accent)]/15 text-[var(--foreground)]"
+                      : "border-[var(--border)] bg-[var(--card)] text-[var(--muted)] hover:text-[var(--foreground)]"
+                  }`}
+                >
+                  {c.label}
+                </button>
+              ))}
+            </div>
+
+            {/* YouTube recommendations */}
+            <div className="mt-6">
+              <div className="flex items-end justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold">YouTube 추천</div>
+                  <div className="mt-1 text-xs text-[var(--muted)]">한국 인기 영상 기반 · 카테고리 필터</div>
+                </div>
+                <button
+                  onClick={reloadYouTube}
+                  disabled={ytLoading}
+                  className="rounded-full border border-[var(--border)] bg-[var(--card)] px-3 py-1.5 text-xs font-medium text-[var(--muted)] transition hover:border-[var(--border-hover)] hover:text-[var(--foreground)] disabled:opacity-50"
+                >
+                  새로고침
+                </button>
+              </div>
+
+              {ytError && (
+                <div className="mt-3 rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-xs text-red-300">
+                  {ytError}
+                  <div className="mt-1 text-[11px] text-red-300/80">
+                    (서버에 <code className="rounded bg-black/30 px-1 py-0.5">YOUTUBE_DATA_API_KEY</code> 설정이 필요할 수 있어요)
+                  </div>
+                </div>
+              )}
+
+              {!ytError && ytLoading && ytItems.length === 0 && (
+                <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {Array.from({ length: 4 }).map((_, i) => (
+                    <div
+                      key={i}
+                      className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4 animate-pulse"
+                    >
+                      <div className="flex gap-3">
+                        <div className="h-20 w-36 flex-none rounded-xl bg-[var(--border)]/40" />
+                        <div className="min-w-0 flex-1 space-y-2">
+                          <div className="h-4 w-5/6 rounded bg-[var(--border)]/40" />
+                          <div className="h-3 w-2/5 rounded bg-[var(--border)]/40" />
+                          <div className="h-3 w-1/3 rounded bg-[var(--border)]/40" />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {!ytError && ytItems.length > 0 && (
+                <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {ytItems.map((v) => (
+                    <button
+                      key={v.videoId}
+                      onClick={() => props.onStartDraft({ text: v.url, autoSend: true })}
+                      className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4 text-left transition hover:border-[var(--border-hover)] hover:bg-[var(--card-hover)]"
+                    >
+                      <div className="flex gap-3">
+                        <div className="relative h-20 w-36 flex-none overflow-hidden rounded-xl bg-black/20">
+                          {v.thumbnail ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={v.thumbnail} alt="" className="h-full w-full object-cover" />
+                          ) : (
+                            <div className="h-full w-full bg-black/20" />
+                          )}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="line-clamp-2 text-sm font-medium">{v.title}</div>
+                          <div className="mt-1 line-clamp-1 text-xs text-[var(--muted)]">{v.channelTitle}</div>
+                          {v.publishedAt && (
+                            <div className="mt-1 text-xs text-[var(--muted)]">
+                              {formatRelativeTime(new Date(v.publishedAt))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {!ytError && !ytLoading && ytItems.length === 0 && (
+                <div className="mt-3 rounded-2xl border border-[var(--border)] bg-[var(--card)] px-4 py-3 text-xs text-[var(--muted)]">
+                  추천 영상을 불러오지 못했어요. 잠시 후 다시 시도해 주세요.
+                </div>
+              )}
+            </div>
+
+            <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-3">
+              {starters.map((s) => (
+                <button
+                  key={s.label}
+                  onClick={() => props.onStartDraft({ text: s.prompt, autoSend: true })}
+                  className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4 text-left transition hover:border-[var(--border-hover)] hover:bg-[var(--card-hover)]"
+                >
+                  <div className="text-sm font-medium">{s.label}</div>
+                  <div className="mt-1 line-clamp-2 text-xs text-[var(--muted)]">{s.prompt}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ChatView(props: {
   session: ChatSession | null;
   model: string;
@@ -691,6 +1126,8 @@ function ChatView(props: {
   setReasoningEffort: (r: ReasoningEffort) => void;
   setVerbosity: (v: Verbosity) => void;
   authedFetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+  draft?: Draft | null;
+  onDraftConsumed?: () => void;
   onMessagesChange: (messages: Message[]) => void;
   onCreateSession: () => Promise<string | null>;
   onOpenSidebar: () => void;
@@ -739,7 +1176,6 @@ function ChatView(props: {
     } catch {
       // ignore
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -829,8 +1265,10 @@ function ChatView(props: {
     }
   }, [input]);
 
-  async function send() {
-    if ((!input.trim() && pendingImages.length === 0) || loading) return;
+  async function send(override?: { content?: string; images?: string[] }) {
+    const userContentOriginal = (override?.content ?? input).trim();
+    const userImages = override?.images ?? [...pendingImages];
+    if ((!userContentOriginal && userImages.length === 0) || loading) return;
 
     let sessionId: string | null = props.session?.id ?? null;
     
@@ -843,9 +1281,6 @@ function ChatView(props: {
       }
       await new Promise((r) => setTimeout(r, 100));
     }
-
-    const userContent = input.trim();
-    const userImages = [...pendingImages];
     setInput("");
     setPendingImages([]);
     setLoading(true);
@@ -856,7 +1291,7 @@ function ChatView(props: {
         method: "POST",
         body: JSON.stringify({ 
           role: "user", 
-          content: userContent,
+          content: userContentOriginal,
           images: userImages.length > 0 ? userImages : undefined,
         }),
       });
@@ -865,7 +1300,7 @@ function ChatView(props: {
       const userMessage: Message = {
         id: userMsgJson.message?.id ?? generateId(),
         role: "user",
-        content: userContent,
+        content: userContentOriginal,
         images: userImages.length > 0 ? userImages : undefined,
         timestamp: new Date(),
       };
@@ -889,18 +1324,24 @@ function ChatView(props: {
       props.onMessagesChange([...newMessages, assistantMessage]);
 
       // Build messages for API - include images as content parts
+      const youtubeUrls = extractYouTubeUrls(userMessage.content);
+      const youtubeUrl = youtubeUrls[0] ?? null;
+      const modelUserContent =
+        youtubeUrl ? buildYouTubeAnalyzePrompt(youtubeUrl, userMessage.content) : userMessage.content;
+
       const apiMessages = newMessages.map((m) => {
         if (m.images && m.images.length > 0) {
           const contentParts: Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }> = [];
-          if (m.content) {
-            contentParts.push({ type: "text", text: m.content });
+          const text = m.id === userMessage.id ? modelUserContent : m.content;
+          if (text) {
+            contentParts.push({ type: "text", text });
           }
           for (const img of m.images) {
             contentParts.push({ type: "image_url", image_url: { url: img } });
           }
           return { role: m.role, content: contentParts };
         }
-        return { role: m.role, content: m.content };
+        return { role: m.role, content: m.id === userMessage.id ? modelUserContent : m.content };
       });
 
       const requestBody: Record<string, unknown> = {
@@ -910,7 +1351,9 @@ function ChatView(props: {
         verbosity: props.verbosity,
       };
 
-      if (webSearchEnabled) {
+      // If the user provided a YouTube URL, we effectively need web search for good results.
+      const effectiveWebSearchEnabled = webSearchEnabled || Boolean(youtubeUrl);
+      if (effectiveWebSearchEnabled) {
         requestBody.webSearch = { enabled: true, maxResults: webSearchMaxResults };
       }
       
@@ -1008,6 +1451,28 @@ function ChatView(props: {
       setLoading(false);
     }
   }
+
+  // Draft injection from HomeView (topic/search/YouTube URL)
+  useEffect(() => {
+    const d = props.draft;
+    if (!d) return;
+    if (loading) return;
+    const text = d.text?.trim?.() ? d.text : "";
+    if (!text) {
+      props.onDraftConsumed?.();
+      return;
+    }
+
+    if (d.autoSend) {
+      props.onDraftConsumed?.();
+      void send({ content: text });
+      return;
+    }
+
+    setInput(text);
+    props.onDraftConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.draft, loading]);
 
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -1114,6 +1579,28 @@ function ChatView(props: {
             <p className="mt-1 text-xs text-[var(--muted)]">
               이미지를 붙여넣거나 첨부할 수 있어요
             </p>
+
+            {/* Quick starters (for users who struggle to ask the first question) */}
+            <div className="mt-5 flex flex-wrap justify-center gap-2">
+              {[
+                { label: "주제 추천", prompt: "내가 대화 주제를 잘 못 정해. 오늘 이야기할 주제 5개만 추천해줘. (경제/출산/육아/릴스/일상 중에서)" },
+                { label: "경제 브리핑", prompt: "오늘 한국 경제/정책에서 중요한 이슈 5개를 3줄 요약으로 알려주고, 각각 '왜 중요한지'도 1줄씩 설명해줘." },
+                { label: "출산 준비", prompt: "2주 뒤에 출산 예정이야. 출산 준비 체크리스트를 '오늘/이번 주/출산 직전'으로 나눠서 만들어줘." },
+                { label: "릴스 아이디어", prompt: "예비 부모/일상 주제로 인스타 릴스 아이디어 10개를 제안해줘. (훅/구성/촬영 컷/자막 톤)" },
+              ].map((x) => (
+                <button
+                  key={x.label}
+                  onClick={() => void send({ content: x.prompt })}
+                  className="rounded-full border border-[var(--border)] bg-[var(--card)] px-3 py-1.5 text-xs font-medium text-[var(--muted)] transition hover:border-[var(--border-hover)] hover:text-[var(--foreground)]"
+                >
+                  {x.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="mt-3 text-xs text-[var(--muted)]">
+              YouTube 링크로 시작하려면 <span className="font-medium">Home</span> 탭에서 Paste를 사용하세요.
+            </div>
           </div>
         ) : (
           <div className="mx-auto max-w-3xl space-y-3 sm:space-y-4">

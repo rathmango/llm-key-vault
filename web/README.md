@@ -3,7 +3,7 @@
 내 API Key(OpenAI/Anthropic)를 Supabase에 **암호화 저장**하고, 웹에서 채팅/비교를 할 수 있는 Next.js 앱입니다.
 
 추가 기능:
-- **Web 검색**: 채팅 상단의 **“Web 검색”** 토글을 켜면, 서버가 먼저 웹 검색(Tavily) 결과를 가져와 모델에게 컨텍스트로 제공하고 **Sources(출처)** 를 함께 표시합니다.
+- **Web 검색**: 채팅 상단의 **“Web 검색”** 토글을 켜면, 서버가 OpenAI Responses API의 built-in **`web_search` tool**로 검색을 수행하고 **Sources(출처)** 를 함께 표시합니다.
 
 ## Getting Started
 
@@ -20,7 +20,10 @@
 - `LLMKV_ENCRYPTION_KEY`
 
 Web 검색(선택):
-- `TAVILY_API_KEY`
+- (추가 키 없음) OpenAI built-in web search 사용
+
+YouTube 추천(선택):
+- `YOUTUBE_DATA_API_KEY` (서버 전용) — Home 탭의 “추천 영상 카드(썸네일/제목)”에 사용
 
 ### 개발 서버 실행
 

@@ -4,6 +4,20 @@ import { getSupabaseAdmin } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";
 
+function extractYouTubeId(input: string): string | null {
+  const text = input.trim();
+  // watch?v=
+  const m1 = text.match(/(?:youtube\.com\/watch\?[^#\s]*\bv=)([a-zA-Z0-9_-]{6,})/i);
+  if (m1?.[1]) return m1[1];
+  // youtu.be/
+  const m2 = text.match(/youtu\.be\/([a-zA-Z0-9_-]{6,})/i);
+  if (m2?.[1]) return m2[1];
+  // shorts/
+  const m3 = text.match(/youtube\.com\/shorts\/([a-zA-Z0-9_-]{6,})/i);
+  if (m3?.[1]) return m3[1];
+  return null;
+}
+
 const AddMessageSchema = z.object({
   role: z.enum(["user", "assistant", "system"]),
   content: z.string(),
@@ -72,7 +86,10 @@ export async function POST(request: Request, context: RouteContext) {
         .eq("role", "user");
 
       if (count === 1) {
-        const title = body.content.slice(0, 50) + (body.content.length > 50 ? "…" : "");
+        const yt = extractYouTubeId(body.content);
+        const title = yt
+          ? `📺 YouTube · ${yt}`
+          : body.content.slice(0, 50) + (body.content.length > 50 ? "…" : "");
         await supabase
           .from("chat_sessions")
           .update({ title })
