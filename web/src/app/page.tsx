@@ -262,7 +262,7 @@ export default function Home() {
     
     const loadMessages = async () => {
       try {
-        const res = await fetch(`/api/sessions/${currentSessionId}?limit=20`, {
+        const res = await fetch(`/api/sessions/${currentSessionId}?limit=10`, {
           headers: { Authorization: `Bearer ${accessToken}` },
         });
         if (!res.ok) return;
@@ -308,7 +308,7 @@ export default function Home() {
     );
     
     try {
-      const res = await fetch(`/api/sessions/${currentSessionId}?limit=20&before=${session.oldestId}`, {
+      const res = await fetch(`/api/sessions/${currentSessionId}?limit=10&before=${session.oldestId}`, {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
       if (!res.ok) return;
@@ -810,7 +810,7 @@ function ChatView(props: {
   };
 
   const allMessages = props.session?.messages ?? [];
-  const VISIBLE_COUNT = 6; // Show last 6 messages initially
+  const VISIBLE_COUNT = 4; // Show last 4 messages initially
   const hasCollapsedMessages = collapsedMessages && allMessages.length > VISIBLE_COUNT;
   const collapsedCount = hasCollapsedMessages ? allMessages.length - VISIBLE_COUNT : 0;
   const messages = hasCollapsedMessages ? allMessages.slice(-VISIBLE_COUNT) : allMessages;
