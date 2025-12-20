@@ -1311,34 +1311,86 @@ function ChatView(props: {
       const youtubeUrl = youtubeUrls[0] ?? null;
 
       if (youtubeUrl) {
-        // YouTube ingestion pipeline (Gemini transcript + DB 저장) — do not stream full transcript to chat.
+        // YouTube ingestion pipeline with SSE progress updates
         const ingestRes = await props.authedFetch("/api/youtube/ingest", {
           method: "POST",
           body: JSON.stringify({ sessionId: sessionIdFinal, url: youtubeUrl, lang: "ko" }),
         });
-        const ingestJson = await ingestRes.json().catch(() => ({}));
+
         if (!ingestRes.ok) {
-          throw new Error(ingestJson?.error ?? "YouTube ingest failed");
+          const errJson = await ingestRes.json().catch(() => ({}));
+          throw new Error(errJson?.error ?? "YouTube ingest failed");
         }
 
-        const assistantContentLocal =
-          typeof ingestJson?.analysis?.markdown === "string"
-            ? (ingestJson.analysis.markdown as string)
-            : "YouTube 컨텍스트 저장 완료 (요약 생성 실패)";
+        // Stream progress updates
+        const reader = ingestRes.body?.getReader();
+        if (!reader) throw new Error("No response body");
 
-        // Persist assistant message (summary/outlines only)
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let videoTitle = "";
+        let finalMarkdown = "";
+
+        // Initial progress message
+        props.onMessagesChange(sessionIdFinal, [
+          ...newMessages,
+          { ...assistantMessage, content: "🎬 영상 분석 시작…" },
+        ]);
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const data = line.slice(6).trim();
+            if (!data || data === "[DONE]") continue;
+
+            try {
+              const event = JSON.parse(data);
+
+              if (event.type === "progress") {
+                const progressBar = "●".repeat(event.step) + "○".repeat(event.total - event.step);
+                const progressContent = videoTitle
+                  ? `## 📺 ${videoTitle}\n\n${progressBar} (${event.step}/${event.total})\n\n${event.message}`
+                  : `${progressBar} (${event.step}/${event.total})\n\n${event.message}`;
+                props.onMessagesChange(sessionIdFinal, [
+                  ...newMessages,
+                  { ...assistantMessage, content: progressContent },
+                ]);
+              } else if (event.type === "metadata" && event.video?.title) {
+                videoTitle = event.video.title;
+              } else if (event.type === "complete") {
+                finalMarkdown = event.analysis?.markdown ?? "YouTube 컨텍스트 저장 완료";
+              } else if (event.type === "error") {
+                throw new Error(event.error ?? "YouTube ingest failed");
+              }
+            } catch (parseErr) {
+              // Skip invalid JSON lines
+              if (parseErr instanceof Error && parseErr.message.includes("ingest")) {
+                throw parseErr;
+              }
+            }
+          }
+        }
+
+        // Persist final assistant message
         await props.authedFetch(`/api/sessions/${sessionId}/messages`, {
           method: "POST",
           body: JSON.stringify({
             role: "assistant",
-            content: assistantContentLocal,
+            content: finalMarkdown || "YouTube 컨텍스트 저장 완료",
           }),
         });
 
-        // Update UI and exit early (skip OpenAI streaming)
+        // Update UI with final result
         props.onMessagesChange(sessionIdFinal, [
           ...newMessages,
-          { ...assistantMessage, content: assistantContentLocal },
+          { ...assistantMessage, content: finalMarkdown || "YouTube 컨텍스트 저장 완료" },
         ]);
         return;
       }

@@ -179,133 +179,189 @@ function buildAnalysisMarkdown(args: {
   return lines.join("\n");
 }
 
-export async function POST(request: Request) {
-  try {
-    const user = await requireUser(request);
-    const body = BodySchema.parse(await request.json());
-
-    const videoId = extractYouTubeId(body.url);
-    if (!videoId) return Response.json({ error: "Invalid YouTube URL" }, { status: 400 });
-
-    const supabase = getSupabaseAdmin();
-
-    // Verify session ownership
-    const { data: session } = await supabase
-      .from("chat_sessions")
-      .select("id")
-      .eq("id", body.sessionId)
-      .eq("user_id", user.id)
-      .single();
-
-    if (!session) return Response.json({ error: "Session not found" }, { status: 404 });
-
-    const ytKey = getYouTubeApiKey();
-    if (!ytKey) return Response.json({ error: "Missing YOUTUBE_DATA_API_KEY" }, { status: 500 });
-
-    const geminiKey = await loadGeminiKey(user.id);
-    if (!geminiKey) {
-      return Response.json({ error: "Gemini API key not set. Save it in API Key 탭 (Gemini)." }, { status: 400 });
-    }
-
-    const lang = (body.lang ?? "ko").trim() || "ko";
-    const geminiModel = body.model ?? "gemini-2.5-flash";
-
-    // Fetch metadata + run Gemini once to get transcript + analysis sections
-    const video = await fetchVideoMeta(ytKey, videoId);
-
-    const prompt = [
-      "You are an expert YouTube video analyzer and transcription engine.",
-      "",
-      "Return EXACTLY four sections in this order, each starting with its header line:",
-      "### SUMMARY",
-      "### OUTLINE",
-      "### QUESTIONS",
-      "### TRANSCRIPT",
-      "",
-      "Rules:",
-      "- SUMMARY: 8–12 bullet points in Korean.",
-      "- OUTLINE: bullet list of key moments. Each bullet MUST start with [MM:SS].",
-      "- QUESTIONS: 5 follow-up questions in Korean.",
-      "- TRANSCRIPT: FULL transcript of ALL spoken words. Each line MUST be: [MM:SS] <text>",
-      "- Output ONLY these sections; no extra text.",
-      "",
-      `Preferred language hint: ${lang}`,
-      "",
-      "Important: If the video is long, still try to output as much transcript as possible in the required format.",
-    ].join("\n");
-
-    const combined = await geminiGenerateText({
-      apiKey: geminiKey,
-      model: geminiModel,
-      contents: [
-        {
-          role: "user",
-          parts: [
-            { file_data: { file_uri: video.url } },
-            { text: prompt },
-          ],
-        },
-      ],
-    });
-
-    const summaryMd = takeSection(combined, "SUMMARY");
-    const outlineMd = takeSection(combined, "OUTLINE");
-    const questionsMd = takeSection(combined, "QUESTIONS");
-    const transcriptRaw = takeSection(combined, "TRANSCRIPT");
-    const transcriptSanitized = sanitizeTranscript(transcriptRaw);
-
-    // Upsert video_contexts
-    const { data: ctx, error: upsertError } = await supabase
-      .from("video_contexts")
-      .upsert(
-        {
-          user_id: user.id,
-          session_id: body.sessionId,
-          provider: "gemini",
-          video_id: videoId,
-          url: video.url,
-          title: video.title,
-          channel_title: video.channelTitle,
-          description: video.description,
-          transcript_language: lang,
-          transcript_source: "gemini",
-          transcript_text: transcriptSanitized.text,
-          summary_md: summaryMd,
-          outline_md: outlineMd,
-          questions_md: questionsMd,
-        },
-        { onConflict: "session_id,video_id" }
-      )
-      .select()
-      .single();
-
-    if (upsertError) throw new Error(upsertError.message);
-
-    const assistantMarkdown = buildAnalysisMarkdown({
-      video,
-      summaryMd,
-      outlineMd,
-      questionsMd,
-      transcriptSaved: Boolean(transcriptSanitized.text),
-      transcriptSource: "gemini",
-      transcriptTruncated: transcriptSanitized.isTruncated,
-    });
-
-    return Response.json({
-      context: ctx,
-      video,
-      analysis: {
-        markdown: assistantMarkdown,
-        transcriptTruncated: transcriptSanitized.isTruncated,
-        transcriptSegments: transcriptSanitized.segmentsCount,
-      },
-    });
-  } catch (e) {
-    if (e instanceof Response) return e;
-    if (e instanceof z.ZodError) return Response.json({ error: e.message }, { status: 400 });
-    const message = e instanceof Error ? e.message : "Unexpected error";
-    return Response.json({ error: message }, { status: 500 });
-  }
+// SSE helper
+function sseEvent(type: string, data: unknown): string {
+  return `data: ${JSON.stringify({ type, ...((typeof data === "object" && data !== null) ? data : { value: data }) })}\n\n`;
 }
 
+export async function POST(request: Request) {
+  const encoder = new TextEncoder();
 
+  // Stream for progress updates
+  const stream = new TransformStream();
+  const writer = stream.writable.getWriter();
+
+  const send = async (type: string, data: unknown) => {
+    await writer.write(encoder.encode(sseEvent(type, data)));
+  };
+
+  const sendError = async (message: string) => {
+    await send("error", { error: message });
+    await writer.close();
+  };
+
+  // Start processing in background
+  (async () => {
+    try {
+      const user = await requireUser(request);
+      const body = BodySchema.parse(await request.json());
+
+      const videoId = extractYouTubeId(body.url);
+      if (!videoId) {
+        await sendError("Invalid YouTube URL");
+        return;
+      }
+
+      const supabase = getSupabaseAdmin();
+
+      // Verify session ownership
+      const { data: session } = await supabase
+        .from("chat_sessions")
+        .select("id")
+        .eq("id", body.sessionId)
+        .eq("user_id", user.id)
+        .single();
+
+      if (!session) {
+        await sendError("Session not found");
+        return;
+      }
+
+      const ytKey = getYouTubeApiKey();
+      if (!ytKey) {
+        await sendError("Missing YOUTUBE_DATA_API_KEY");
+        return;
+      }
+
+      const geminiKey = await loadGeminiKey(user.id);
+      if (!geminiKey) {
+        await sendError("Gemini API key not set. Save it in API Key 탭 (Gemini).");
+        return;
+      }
+
+      const lang = (body.lang ?? "ko").trim() || "ko";
+      const geminiModel = body.model ?? "gemini-2.5-flash";
+
+      // Step 1: Fetch metadata
+      await send("progress", { step: 1, total: 4, message: "🔍 영상 정보 가져오는 중…" });
+      const video = await fetchVideoMeta(ytKey, videoId);
+
+      // Send video metadata early so UI can show title
+      await send("metadata", { video });
+
+      // Step 2: Starting Gemini analysis
+      await send("progress", { step: 2, total: 4, message: "🤖 Gemini로 영상 분석 중… (30초~2분 소요)" });
+
+      const prompt = [
+        "You are an expert YouTube video analyzer and transcription engine.",
+        "",
+        "Return EXACTLY four sections in this order, each starting with its header line:",
+        "### SUMMARY",
+        "### OUTLINE",
+        "### QUESTIONS",
+        "### TRANSCRIPT",
+        "",
+        "Rules:",
+        "- SUMMARY: 8–12 bullet points in Korean.",
+        "- OUTLINE: bullet list of key moments. Each bullet MUST start with [MM:SS].",
+        "- QUESTIONS: 5 follow-up questions in Korean.",
+        "- TRANSCRIPT: FULL transcript of ALL spoken words. Each line MUST be: [MM:SS] <text>",
+        "- Output ONLY these sections; no extra text.",
+        "",
+        `Preferred language hint: ${lang}`,
+        "",
+        "Important: If the video is long, still try to output as much transcript as possible in the required format.",
+      ].join("\n");
+
+      const combined = await geminiGenerateText({
+        apiKey: geminiKey,
+        model: geminiModel,
+        contents: [
+          {
+            role: "user",
+            parts: [
+              { file_data: { file_uri: video.url } },
+              { text: prompt },
+            ],
+          },
+        ],
+      });
+
+      // Step 3: Parsing results
+      await send("progress", { step: 3, total: 4, message: "📝 결과 정리 중…" });
+
+      const summaryMd = takeSection(combined, "SUMMARY");
+      const outlineMd = takeSection(combined, "OUTLINE");
+      const questionsMd = takeSection(combined, "QUESTIONS");
+      const transcriptRaw = takeSection(combined, "TRANSCRIPT");
+      const transcriptSanitized = sanitizeTranscript(transcriptRaw);
+
+      // Step 4: Saving to DB
+      await send("progress", { step: 4, total: 4, message: "💾 DB에 저장 중…" });
+
+      const { data: ctx, error: upsertError } = await supabase
+        .from("video_contexts")
+        .upsert(
+          {
+            user_id: user.id,
+            session_id: body.sessionId,
+            provider: "gemini",
+            video_id: videoId,
+            url: video.url,
+            title: video.title,
+            channel_title: video.channelTitle,
+            description: video.description,
+            transcript_language: lang,
+            transcript_source: "gemini",
+            transcript_text: transcriptSanitized.text,
+            summary_md: summaryMd,
+            outline_md: outlineMd,
+            questions_md: questionsMd,
+          },
+          { onConflict: "session_id,video_id" }
+        )
+        .select()
+        .single();
+
+      if (upsertError) throw new Error(upsertError.message);
+
+      const assistantMarkdown = buildAnalysisMarkdown({
+        video,
+        summaryMd,
+        outlineMd,
+        questionsMd,
+        transcriptSaved: Boolean(transcriptSanitized.text),
+        transcriptSource: "gemini",
+        transcriptTruncated: transcriptSanitized.isTruncated,
+      });
+
+      // Final result
+      await send("complete", {
+        context: ctx,
+        video,
+        analysis: {
+          markdown: assistantMarkdown,
+          transcriptTruncated: transcriptSanitized.isTruncated,
+          transcriptSegments: transcriptSanitized.segmentsCount,
+        },
+      });
+
+      await writer.close();
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unexpected error";
+      try {
+        await sendError(message);
+      } catch {
+        // Writer might already be closed
+      }
+    }
+  })();
+
+  return new Response(stream.readable, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    },
+  });
+}
