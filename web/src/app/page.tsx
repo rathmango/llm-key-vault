@@ -34,6 +34,19 @@ const VERBOSITIES: Array<{ value: Verbosity; label: string }> = [
   { value: "high", label: "High" },
 ];
 
+// Convert various LaTeX delimiters to standard $...$ and $$...$$ format
+function normalizeLatex(text: string): string {
+  return text
+    // Block math: \[...\] or [ ... ] (with math content) → $$...$$
+    .replace(/\\\[([\s\S]*?)\\\]/g, (_, content) => `$$${content.trim()}$$`)
+    // Inline math: \(...\) → $...$
+    .replace(/\\\(([\s\S]*?)\\\)/g, (_, content) => `$${content.trim()}$`)
+    // Handle [ ... ] with common LaTeX commands (heuristic)
+    .replace(/\[\s*([^[\]]*(?:\\(?:frac|sqrt|sum|int|lim|prod|cdot|times|div|pm|mp|leq|geq|neq|approx|equiv|propto|infty|partial|nabla|alpha|beta|gamma|delta|theta|pi|sigma|omega|phi|psi|lambda|mu|nu|rho|tau|epsilon|zeta|eta|kappa|xi|chi|text|mathrm|mathbf|mathit|left|right|big|Big|bigg|Bigg)[^[\]]*)+)\s*\]/g, (_, content) => `$$${content.trim()}$$`)
+    // Fix common patterns where ** bold ** breaks in math context
+    .replace(/\*\*([^*]+)\*\*/g, '**$1**');
+}
+
 type Message = {
   id: string;
   role: "user" | "assistant";
@@ -842,12 +855,12 @@ function ChatView(props: {
                       {msg.content}
                     </div>
                   ) : (
-                    <div className="prose prose-sm prose-invert max-w-none [&_pre]:bg-[#1e1e1e] [&_pre]:rounded-lg [&_pre]:p-4 [&_code]:text-[13px] [&_.katex]:text-[1em]">
+                    <div className="prose prose-sm prose-invert max-w-none [&_pre]:bg-[#1e1e1e] [&_pre]:rounded-lg [&_pre]:p-4 [&_code]:text-[13px] [&_.katex]:text-[1em] [&_.katex-display]:my-4 [&_.katex-display]:overflow-x-auto">
                       <ReactMarkdown 
                         remarkPlugins={[remarkGfm, remarkMath]}
                         rehypePlugins={[rehypeKatex, rehypeHighlight]}
                       >
-                        {msg.content}
+                        {normalizeLatex(msg.content)}
                       </ReactMarkdown>
                     </div>
                   )}
