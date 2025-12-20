@@ -33,6 +33,9 @@ export async function loadUserApiKey(userId: string, provider: Provider) {
   return decryptSecret(data.encrypted_key);
 }
 
+export type ReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh";
+export type Verbosity = "low" | "medium" | "high";
+
 export async function sendChat(params: {
   provider: Provider;
   model: string;
@@ -40,6 +43,9 @@ export async function sendChat(params: {
   temperature?: number;
   maxTokens?: number;
   userId: string;
+  // GPT-5.2 specific
+  reasoningEffort?: ReasoningEffort;
+  verbosity?: Verbosity;
 }): Promise<ChatResponse> {
   const apiKey = await loadUserApiKey(params.userId, params.provider);
 
@@ -51,6 +57,8 @@ export async function sendChat(params: {
         messages: params.messages,
         temperature: params.temperature,
         maxTokens: params.maxTokens,
+        reasoningEffort: params.reasoningEffort,
+        verbosity: params.verbosity,
       });
 
     case "anthropic":
@@ -75,19 +83,40 @@ async function callOpenAI(params: {
   messages: ChatMessage[];
   temperature?: number;
   maxTokens?: number;
+  reasoningEffort?: ReasoningEffort;
+  verbosity?: Verbosity;
 }): Promise<ChatResponse> {
+  // Build request body
+  const body: Record<string, unknown> = {
+    model: params.model,
+    messages: params.messages,
+  };
+
+  // GPT-5.2 specific parameters
+  if (params.reasoningEffort !== undefined) {
+    body.reasoning_effort = params.reasoningEffort;
+  }
+  if (params.verbosity !== undefined) {
+    body.verbosity = params.verbosity;
+  }
+
+  // temperature/top_p only supported when reasoning_effort is "none" or undefined
+  if (!params.reasoningEffort || params.reasoningEffort === "none") {
+    if (params.temperature !== undefined) {
+      body.temperature = params.temperature;
+    }
+  }
+  if (params.maxTokens !== undefined) {
+    body.max_tokens = params.maxTokens;
+  }
+
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${params.apiKey}`,
     },
-    body: JSON.stringify({
-      model: params.model,
-      messages: params.messages,
-      temperature: params.temperature,
-      max_tokens: params.maxTokens,
-    }),
+    body: JSON.stringify(body),
   });
 
   const data = await res.json().catch(() => null);

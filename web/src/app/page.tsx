@@ -5,10 +5,26 @@ import type { Session } from "@supabase/supabase-js";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
 type Provider = "openai" | "anthropic";
+type ReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh";
+type Verbosity = "low" | "medium" | "high";
 
 const PROVIDERS: Array<{ id: Provider; name: string; defaultModel: string }> = [
-  { id: "openai", name: "OpenAI", defaultModel: "gpt-4o-mini" },
+  { id: "openai", name: "OpenAI", defaultModel: "gpt-5.2-2025-12-11" },
   { id: "anthropic", name: "Anthropic", defaultModel: "claude-sonnet-4-20250514" },
+];
+
+const REASONING_EFFORTS: Array<{ value: ReasoningEffort; label: string }> = [
+  { value: "none", label: "None" },
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+  { value: "xhigh", label: "Extra High" },
+];
+
+const VERBOSITIES: Array<{ value: Verbosity; label: string }> = [
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
 ];
 
 type Message = {
@@ -24,6 +40,8 @@ type ChatSession = {
   messages: Message[];
   provider: Provider;
   model: string;
+  reasoningEffort?: ReasoningEffort;
+  verbosity?: Verbosity;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -118,7 +136,9 @@ export default function Home() {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [provider, setProvider] = useState<Provider>("openai");
-  const [model, setModel] = useState<string>("gpt-4o-mini");
+  const [model, setModel] = useState<string>("gpt-5.2-2025-12-11");
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("none");
+  const [verbosity, setVerbosity] = useState<Verbosity>("medium");
 
   useEffect(() => {
     if (!supabase) return;
@@ -202,6 +222,8 @@ export default function Home() {
       messages: [],
       provider,
       model,
+      reasoningEffort: provider === "openai" ? reasoningEffort : undefined,
+      verbosity: provider === "openai" ? verbosity : undefined,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -373,8 +395,12 @@ export default function Home() {
             session={currentSession}
             provider={provider}
             model={model}
+            reasoningEffort={reasoningEffort}
+            verbosity={verbosity}
             setProvider={setProvider}
             setModel={setModel}
+            setReasoningEffort={setReasoningEffort}
+            setVerbosity={setVerbosity}
             authedFetch={authedFetch}
             onMessagesChange={(messages) => {
               if (currentSessionId) {
@@ -416,8 +442,12 @@ function ChatView(props: {
   session: ChatSession | null;
   provider: Provider;
   model: string;
+  reasoningEffort: ReasoningEffort;
+  verbosity: Verbosity;
   setProvider: (p: Provider) => void;
   setModel: (m: string) => void;
+  setReasoningEffort: (r: ReasoningEffort) => void;
+  setVerbosity: (v: Verbosity) => void;
   authedFetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
   onMessagesChange: (messages: Message[]) => void;
   onCreateSession: () => void;
@@ -465,13 +495,21 @@ function ChatView(props: {
     setError("");
 
     try {
+      const requestBody: Record<string, unknown> = {
+        provider: props.provider,
+        model: props.model,
+        messages: newMessages.map((m) => ({ role: m.role, content: m.content })),
+      };
+      
+      // GPT-5.2 specific parameters (OpenAI only)
+      if (props.provider === "openai") {
+        requestBody.reasoningEffort = props.reasoningEffort;
+        requestBody.verbosity = props.verbosity;
+      }
+      
       const res = await props.authedFetch("/api/chat", {
         method: "POST",
-        body: JSON.stringify({
-          provider: props.provider,
-          model: props.model,
-          messages: newMessages.map((m) => ({ role: m.role, content: m.content })),
-        }),
+        body: JSON.stringify(requestBody),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json?.error ?? "Chat failed");
@@ -502,8 +540,8 @@ function ChatView(props: {
   return (
     <div className="flex h-full flex-col">
       {/* Header */}
-      <header className="flex items-center justify-between border-b border-[var(--border)] px-6 py-3">
-        <div className="flex items-center gap-3">
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] px-6 py-3">
+        <div className="flex flex-wrap items-center gap-2">
           <select
             value={props.provider}
             onChange={(e) => {
@@ -523,9 +561,42 @@ function ChatView(props: {
           <input
             value={props.model}
             onChange={(e) => props.setModel(e.target.value)}
-            className="w-48 rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-1.5 text-sm outline-none transition hover:border-[var(--border-hover)] focus:border-[var(--accent)]"
+            className="w-44 rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-1.5 text-sm outline-none transition hover:border-[var(--border-hover)] focus:border-[var(--accent)]"
             placeholder="Model"
           />
+          {/* GPT-5.2 Parameters (OpenAI only) */}
+          {props.provider === "openai" && (
+            <>
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs text-[var(--muted)]">Reasoning:</span>
+                <select
+                  value={props.reasoningEffort}
+                  onChange={(e) => props.setReasoningEffort(e.target.value as ReasoningEffort)}
+                  className="rounded-lg border border-[var(--border)] bg-[var(--card)] px-2 py-1.5 text-xs outline-none transition hover:border-[var(--border-hover)]"
+                >
+                  {REASONING_EFFORTS.map((r) => (
+                    <option key={r.value} value={r.value}>
+                      {r.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs text-[var(--muted)]">Verbosity:</span>
+                <select
+                  value={props.verbosity}
+                  onChange={(e) => props.setVerbosity(e.target.value as Verbosity)}
+                  className="rounded-lg border border-[var(--border)] bg-[var(--card)] px-2 py-1.5 text-xs outline-none transition hover:border-[var(--border-hover)]"
+                >
+                  {VERBOSITIES.map((v) => (
+                    <option key={v.value} value={v.value}>
+                      {v.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </>
+          )}
         </div>
         <div className="text-xs text-[var(--muted)]">
           shift + return으로 줄바꿈
@@ -765,7 +836,7 @@ function ComparePanel(props: {
 }) {
   const [prompt, setPrompt] = useState<string>("");
   const [targets, setTargets] = useState<Record<Provider, { enabled: boolean; model: string }>>({
-    openai: { enabled: true, model: "gpt-4o-mini" },
+    openai: { enabled: true, model: "gpt-5.2-2025-12-11" },
     anthropic: { enabled: true, model: "claude-sonnet-4-20250514" },
   });
   const [loading, setLoading] = useState(false);

@@ -12,12 +12,18 @@ const MessageSchema = z.object({
   content: z.string().min(1),
 });
 
+const ReasoningEffortSchema = z.enum(["none", "low", "medium", "high", "xhigh"]);
+const VerbositySchema = z.enum(["low", "medium", "high"]);
+
 const BodySchema = z.object({
   provider: ProviderSchema,
   model: z.string().min(1),
   messages: z.array(MessageSchema).min(1),
   temperature: z.number().min(0).max(2).optional(),
   maxTokens: z.number().int().min(1).max(8192).optional(),
+  // GPT-5.2 specific
+  reasoningEffort: ReasoningEffortSchema.optional(),
+  verbosity: VerbositySchema.optional(),
 });
 
 export async function POST(request: Request) {
@@ -32,6 +38,8 @@ export async function POST(request: Request) {
       temperature: body.temperature,
       maxTokens: body.maxTokens,
       userId: user.id,
+      reasoningEffort: body.reasoningEffort,
+      verbosity: body.verbosity,
     });
 
     return Response.json({ result });
