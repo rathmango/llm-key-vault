@@ -111,6 +111,27 @@ async function callOpenAIStream(params: {
   }
 }
 
+// Convert Chat Completions format to Responses API format
+function convertToResponsesFormat(messages: ChatMessage[]): unknown[] {
+  return messages.map((msg) => {
+    if (typeof msg.content === "string") {
+      return { role: msg.role, content: msg.content };
+    }
+    
+    // Convert content parts to Responses API format
+    const content = msg.content.map((part) => {
+      if (part.type === "text") {
+        return { type: "input_text", text: part.text };
+      } else if (part.type === "image_url") {
+        return { type: "input_image", image_url: part.image_url.url };
+      }
+      return part;
+    });
+    
+    return { role: msg.role, content };
+  });
+}
+
 // GPT-5.2 Responses API with streaming
 async function callOpenAIResponsesStream(params: {
   apiKey: string;
@@ -125,7 +146,7 @@ async function callOpenAIResponsesStream(params: {
   // Build request body for Responses API
   const body: Record<string, unknown> = {
     model: params.model,
-    input: params.messages,
+    input: convertToResponsesFormat(params.messages),
     stream: true,
   };
 

@@ -1,0 +1,34 @@
+# Workflow Status
+#
+# Quick Flow - Brownfield
+# 아내를 위한 심플한 AI 챗 앱
+#
+# STATUS DEFINITIONS:
+#   - required: 필수
+#   - completed: 완료 (파일 경로)
+#   - in_progress: 진행중
+#   - pending: 대기
+
+generated: "2025-12-20"
+project: "llm-key-vault"
+project_type: "web_app"
+selected_track: "quick-flow"
+field_type: "brownfield"
+
+requirements:
+  completed:
+    - "OpenAI GPT-5.2 전용"
+    - "이미지 업로드/붙여넣기 (클라이언트 압축 → Base64)"
+    - "웹검색 기본값 10개"
+    - "자동 컨텍스트 관리 (80% 임계값 자동 요약)"
+    - "채팅 전환시 메모리 클리어"
+    - "Compare 기능 제거"
+  pending:
+    - "메시지 페이지네이션 (최근 N개만 로드, 스크롤업시 추가)"
+    - "오래된 메시지 접기 (상단 '더 보기')"
+    - "Message Virtualization (보이는 것만 렌더)"
+
+workflow_status:
+  tech-spec: in_progress
+  implementation: pending
+
