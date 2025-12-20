@@ -1425,14 +1425,21 @@ function ChatView(props: {
         if (youtubeUrl) return false; // YouTube has its own context pipeline
         if (webSearchEnabled) return true; // Manual toggle on
         
-        // Auto-detect: keywords that typically need current/real-time info
+        // Auto-detect: keywords that typically need current/real-time info or explicit search requests
         const q = userContentOriginal.toLowerCase();
         const realtimeKeywords = [
+          // 명시적 검색 요청
+          "검색", "찾아", "서치", "search", "look up", "google",
+          // 시간 관련
           "오늘", "현재", "지금", "최근", "최신", "요즘",
+          // 뉴스
           "뉴스", "속보", "이슈",
+          // 금융
           "주가", "환율", "금리", "시세", "코스피", "코스닥", "나스닥", "비트코인",
+          // 기타 실시간
           "날씨", "기온",
           "경기", "스코어", "순위",
+          // 영어
           "today", "current", "latest", "recent", "news",
           "stock", "price", "rate", "weather",
         ];
