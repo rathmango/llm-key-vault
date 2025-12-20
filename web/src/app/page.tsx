@@ -1048,6 +1048,20 @@ function ChatView(props: {
                 ))}
               </select>
             </div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-[var(--muted)]">상세:</span>
+              <select
+                value={props.verbosity}
+                onChange={(e) => props.setVerbosity(e.target.value as Verbosity)}
+                className="rounded-lg border border-[var(--border)] bg-[var(--card)] px-2 py-1.5 text-xs outline-none transition hover:border-[var(--border-hover)]"
+              >
+                {VERBOSITIES.map((v) => (
+                  <option key={v.value} value={v.value}>
+                    {v.label}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
 
           {/* Web search toggle */}
