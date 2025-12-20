@@ -543,7 +543,7 @@ function ChatView(props: {
   async function send() {
     if (!input.trim() || loading) return;
 
-    let sessionId = props.session?.id;
+    let sessionId: string | null = props.session?.id ?? null;
     
     // Create session if none exists
     if (!sessionId) {
