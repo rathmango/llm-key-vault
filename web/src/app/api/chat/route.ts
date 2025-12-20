@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { requireUser } from "@/lib/api/auth";
-import { sendChat } from "@/lib/llm";
+import { sendChatStream } from "@/lib/llm";
 
 export const runtime = "nodejs";
 
@@ -20,7 +20,7 @@ const BodySchema = z.object({
   model: z.string().min(1),
   messages: z.array(MessageSchema).min(1),
   temperature: z.number().min(0).max(2).optional(),
-  maxTokens: z.number().int().min(1).max(8192).optional(),
+  maxTokens: z.number().int().min(1).max(32000).optional(),
   // GPT-5.2 specific
   reasoningEffort: ReasoningEffortSchema.optional(),
   verbosity: VerbositySchema.optional(),
@@ -31,7 +31,7 @@ export async function POST(request: Request) {
     const user = await requireUser(request);
     const body = BodySchema.parse(await request.json());
 
-    const result = await sendChat({
+    const stream = await sendChatStream({
       provider: body.provider,
       model: body.model,
       messages: body.messages,
@@ -42,7 +42,13 @@ export async function POST(request: Request) {
       verbosity: body.verbosity,
     });
 
-    return Response.json({ result });
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      },
+    });
   } catch (e) {
     if (e instanceof Response) return e;
 

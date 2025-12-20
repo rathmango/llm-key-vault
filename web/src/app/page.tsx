@@ -589,7 +589,21 @@ function ChatView(props: {
       const newMessages = [...messages, userMessage];
       props.onMessagesChange(newMessages);
 
-      // Call LLM
+      // Create placeholder assistant message for streaming
+      const assistantId = generateId();
+      let assistantContent = "";
+      let assistantThinking = "";
+      let assistantUsage: Message["usage"] = undefined;
+
+      const assistantMessage: Message = {
+        id: assistantId,
+        role: "assistant",
+        content: "",
+        timestamp: new Date(),
+      };
+      props.onMessagesChange([...newMessages, assistantMessage]);
+
+      // Call LLM with streaming
       const requestBody: Record<string, unknown> = {
         provider: props.provider,
         model: props.model,
@@ -606,33 +620,79 @@ function ChatView(props: {
         method: "POST",
         body: JSON.stringify(requestBody),
       });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json?.error ?? "Chat failed");
-
-      const result = json.result ?? {};
       
-      // Save assistant message to DB
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}));
+        throw new Error(json?.error ?? "Chat failed");
+      }
+
+      // Read streaming response
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error("No response body");
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const data = line.slice(6);
+          if (data === "[DONE]") continue;
+
+          try {
+            const event = JSON.parse(data);
+            
+            if (event.type === "text") {
+              assistantContent += event.delta;
+              props.onMessagesChange([
+                ...newMessages,
+                { ...assistantMessage, content: assistantContent, thinking: assistantThinking || undefined },
+              ]);
+            } else if (event.type === "thinking") {
+              assistantThinking += event.delta;
+              props.onMessagesChange([
+                ...newMessages,
+                { ...assistantMessage, content: assistantContent, thinking: assistantThinking },
+              ]);
+            } else if (event.type === "usage") {
+              assistantUsage = event.usage;
+            }
+          } catch {
+            // Skip invalid JSON
+          }
+        }
+      }
+      
+      // Save final assistant message to DB
       await props.authedFetch(`/api/sessions/${sessionId}/messages`, {
         method: "POST",
         body: JSON.stringify({
           role: "assistant",
-          content: result.text ?? "",
-          thinking: result.thinking,
-          usage_input_tokens: result.usage?.inputTokens,
-          usage_output_tokens: result.usage?.outputTokens,
-          usage_reasoning_tokens: result.usage?.reasoningTokens,
+          content: assistantContent,
+          thinking: assistantThinking || undefined,
+          usage_input_tokens: assistantUsage?.inputTokens,
+          usage_output_tokens: assistantUsage?.outputTokens,
+          usage_reasoning_tokens: assistantUsage?.reasoningTokens,
         }),
       });
 
-      const assistantMessage: Message = {
-        id: generateId(),
-        role: "assistant",
-        content: result.text ?? "",
-        thinking: result.thinking,
-        usage: result.usage,
-        timestamp: new Date(),
-      };
-      props.onMessagesChange([...newMessages, assistantMessage]);
+      // Final update with usage
+      props.onMessagesChange([
+        ...newMessages,
+        {
+          ...assistantMessage,
+          content: assistantContent,
+          thinking: assistantThinking || undefined,
+          usage: assistantUsage,
+        },
+      ]);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Unknown error");
     } finally {
