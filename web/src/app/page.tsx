@@ -5,6 +5,11 @@ import type { Session } from "@supabase/supabase-js";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import rehypeHighlight from "rehype-highlight";
+import "katex/dist/katex.min.css";
+import "highlight.js/styles/github-dark.css";
 
 type Provider = "openai" | "anthropic";
 type ReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh";
@@ -777,8 +782,11 @@ function ChatView(props: {
                       {msg.content}
                     </div>
                   ) : (
-                    <div className="prose prose-sm prose-invert max-w-none">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    <div className="prose prose-sm prose-invert max-w-none [&_pre]:bg-[#1e1e1e] [&_pre]:rounded-lg [&_pre]:p-4 [&_code]:text-[13px] [&_.katex]:text-[1em]">
+                      <ReactMarkdown 
+                        remarkPlugins={[remarkGfm, remarkMath]}
+                        rehypePlugins={[rehypeKatex, rehypeHighlight]}
+                      >
                         {msg.content}
                       </ReactMarkdown>
                     </div>
