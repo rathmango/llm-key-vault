@@ -1823,7 +1823,7 @@ function ChatView(props: {
                 <IconImage />
               </button>
               <button
-                onClick={send}
+                onClick={() => void send()}
                 disabled={loading || (!input.trim() && pendingImages.length === 0)}
                 className="rounded-lg bg-[var(--accent)] p-2 text-white transition hover:bg-[var(--accent-hover)] disabled:opacity-40 disabled:hover:bg-[var(--accent)]"
               >
