@@ -12,14 +12,10 @@ import rehypeHighlight from "rehype-highlight";
 import "katex/dist/katex.min.css";
 import "highlight.js/styles/github-dark.css";
 
-type Provider = "openai" | "anthropic";
 type ReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh";
 type Verbosity = "low" | "medium" | "high";
 
-const PROVIDERS: Array<{ id: Provider; name: string; defaultModel: string }> = [
-  { id: "openai", name: "OpenAI", defaultModel: "gpt-5.2-2025-12-11" },
-  { id: "anthropic", name: "Anthropic", defaultModel: "claude-sonnet-4-20250514" },
-];
+const DEFAULT_MODEL = "gpt-5.2-2025-12-11";
 
 const REASONING_EFFORTS: Array<{ value: ReasoningEffort; label: string }> = [
   { value: "none", label: "None" },
@@ -70,6 +66,7 @@ type Message = {
   id: string;
   role: "user" | "assistant";
   content: string;
+  images?: string[]; // Base64 data URLs
   thinking?: string;
   sources?: Source[];
   usage?: {
@@ -84,7 +81,6 @@ type ChatSession = {
   id: string;
   title: string;
   messages: Message[];
-  provider: Provider;
   model: string;
   reasoningEffort?: ReasoningEffort;
   verbosity?: Verbosity;
@@ -93,7 +89,6 @@ type ChatSession = {
 };
 
 type KeyItem = {
-  provider: string;
   key_hint: string | null;
   updated_at: string | null;
 };
@@ -118,11 +113,11 @@ const IconKey = () => (
   </svg>
 );
 
-const IconCompare = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="3" y="3" width="7" height="9"></rect>
-    <rect x="14" y="3" width="7" height="9"></rect>
-    <path d="M3 16h7v2H3zM14 16h7v2h-7z"></path>
+const IconImage = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+    <circle cx="8.5" cy="8.5" r="1.5"></circle>
+    <polyline points="21 15 16 10 5 21"></polyline>
   </svg>
 );
 
@@ -191,15 +186,14 @@ function formatRelativeTime(date: Date): string {
 export default function Home() {
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
   const [session, setSession] = useState<Session | null>(null);
-  const [activeTab, setActiveTab] = useState<"chat" | "keys" | "compare">("chat");
+  const [activeTab, setActiveTab] = useState<"chat" | "keys">("chat");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   
   // Chat state
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
-  const [provider, setProvider] = useState<Provider>("openai");
-  const [model, setModel] = useState<string>("gpt-5.2-2025-12-11");
-  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("xhigh");
+  const [model, setModel] = useState<string>(DEFAULT_MODEL);
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("medium");
   const [verbosity, setVerbosity] = useState<Verbosity>("medium");
 
   useEffect(() => {
@@ -223,7 +217,7 @@ export default function Home() {
   const user = session?.user ?? null;
   const accessToken = session?.access_token ?? null;
 
-  // Load sessions from DB
+  // Load sessions from DB (only metadata, not messages - for memory optimization)
   useEffect(() => {
     if (!accessToken) return;
     
@@ -237,12 +231,10 @@ export default function Home() {
           return;
         }
         const json = await res.json();
-        console.log("Loaded sessions:", json);
-        const dbSessions = (json.sessions ?? []).map((s: { id: string; title: string; provider: string; model: string; created_at: string; updated_at: string }) => ({
+        const dbSessions = (json.sessions ?? []).map((s: { id: string; title: string; model: string; created_at: string; updated_at: string }) => ({
           id: s.id,
           title: s.title,
-          messages: [] as Message[],
-          provider: s.provider as Provider,
+          messages: [] as Message[], // Empty - loaded on demand
           model: s.model,
           createdAt: new Date(s.created_at),
           updatedAt: new Date(s.updated_at),
@@ -250,7 +242,6 @@ export default function Home() {
         setSessions(dbSessions);
         if (dbSessions.length > 0) {
           setCurrentSessionId((prev) => prev ?? dbSessions[0].id);
-          setProvider(dbSessions[0].provider);
           setModel(dbSessions[0].model);
         }
       } catch (e) {
@@ -272,10 +263,11 @@ export default function Home() {
         });
         if (!res.ok) return;
         const json = await res.json();
-        const msgs = (json.messages ?? []).map((m: { id: string; role: string; content: string; thinking?: string; sources?: unknown; usage_input_tokens?: number; usage_output_tokens?: number; usage_reasoning_tokens?: number; created_at: string }) => ({
+        const msgs = (json.messages ?? []).map((m: { id: string; role: string; content: string; images?: string[]; thinking?: string; sources?: unknown; usage_input_tokens?: number; usage_output_tokens?: number; usage_reasoning_tokens?: number; created_at: string }) => ({
           id: m.id,
           role: m.role as "user" | "assistant",
           content: m.content,
+          images: m.images,
           thinking: m.thinking,
           sources: normalizeSources(m.sources),
           usage: m.usage_input_tokens ? {
@@ -329,7 +321,7 @@ export default function Home() {
           Authorization: `Bearer ${accessToken}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ provider, model }),
+        body: JSON.stringify({ model }),
       });
       if (!res.ok) return null;
       const json = await res.json();
@@ -337,7 +329,6 @@ export default function Home() {
         id: json.session.id,
         title: json.session.title,
         messages: [],
-        provider: json.session.provider as Provider,
         model: json.session.model,
         createdAt: new Date(json.session.created_at),
         updatedAt: new Date(json.session.updated_at),
@@ -479,17 +470,7 @@ export default function Home() {
             }}
             icon={<IconKey />}
           >
-            API Keys
-          </NavButton>
-          <NavButton 
-            active={activeTab === "compare"} 
-            onClick={() => {
-              setActiveTab("compare");
-              setSidebarOpen(false);
-            }}
-            icon={<IconCompare />}
-          >
-            Compare
+            API Key
           </NavButton>
         </nav>
 
@@ -508,8 +489,15 @@ export default function Home() {
                 >
                   <button
                     onClick={() => {
+                      // Clear previous session messages from memory (optimization)
+                      if (currentSessionId && currentSessionId !== s.id) {
+                        setSessions((prev) =>
+                          prev.map((sess) =>
+                            sess.id === currentSessionId ? { ...sess, messages: [] } : sess
+                          )
+                        );
+                      }
                       setCurrentSessionId(s.id);
-                      setProvider(s.provider);
                       setModel(s.model);
                       setSidebarOpen(false);
                     }}
@@ -558,11 +546,9 @@ export default function Home() {
         {activeTab === "chat" && (
           <ChatView
             session={currentSession}
-            provider={provider}
             model={model}
             reasoningEffort={reasoningEffort}
             verbosity={verbosity}
-            setProvider={setProvider}
             setModel={setModel}
             setReasoningEffort={setReasoningEffort}
             setVerbosity={setVerbosity}
@@ -577,7 +563,6 @@ export default function Home() {
           />
         )}
         {activeTab === "keys" && <KeysPanel authedFetch={authedFetch} onOpenSidebar={() => setSidebarOpen(true)} />}
-        {activeTab === "compare" && <ComparePanel authedFetch={authedFetch} onOpenSidebar={() => setSidebarOpen(true)} />}
       </main>
     </div>
   );
@@ -604,13 +589,47 @@ function NavButton(props: {
   );
 }
 
+// Image optimization utility
+async function optimizeImage(file: File): Promise<string> {
+  const maxSize = 1024;
+  const quality = 0.8;
+  
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      let { width, height } = img;
+      if (width > maxSize || height > maxSize) {
+        const ratio = Math.min(maxSize / width, maxSize / height);
+        width *= ratio;
+        height *= ratio;
+      }
+      
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        reject(new Error('Failed to get canvas context'));
+        return;
+      }
+      ctx.drawImage(img, 0, 0, width, height);
+      const base64 = canvas.toDataURL('image/jpeg', quality);
+      URL.revokeObjectURL(img.src);
+      resolve(base64);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(img.src);
+      reject(new Error('Failed to load image'));
+    };
+    img.src = URL.createObjectURL(file);
+  });
+}
+
 function ChatView(props: {
   session: ChatSession | null;
-  provider: Provider;
   model: string;
   reasoningEffort: ReasoningEffort;
   verbosity: Verbosity;
-  setProvider: (p: Provider) => void;
   setModel: (m: string) => void;
   setReasoningEffort: (r: ReasoningEffort) => void;
   setVerbosity: (v: Verbosity) => void;
@@ -624,9 +643,11 @@ function ChatView(props: {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>("");
   const [webSearchEnabled, setWebSearchEnabled] = useState(true);
-  const [webSearchMaxResults, setWebSearchMaxResults] = useState(5);
+  const [webSearchMaxResults, setWebSearchMaxResults] = useState(10);
+  const [pendingImages, setPendingImages] = useState<string[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Persist web search settings
   useEffect(() => {
@@ -637,7 +658,7 @@ function ChatView(props: {
 
       const savedMax = localStorage.getItem("llmkv:webSearchMaxResults");
       const n = savedMax ? Number(savedMax) : NaN;
-      if ([3, 5, 7, 10].includes(n)) setWebSearchMaxResults(n);
+      if ([5, 10, 15, 20].includes(n)) setWebSearchMaxResults(n);
     } catch {
       // ignore
     }
@@ -660,6 +681,55 @@ function ChatView(props: {
     }
   }, [webSearchMaxResults]);
 
+  // Handle image paste
+  useEffect(() => {
+    const handlePaste = async (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      
+      for (const item of items) {
+        if (item.type.startsWith('image/')) {
+          e.preventDefault();
+          const file = item.getAsFile();
+          if (file) {
+            try {
+              const optimized = await optimizeImage(file);
+              setPendingImages((prev) => [...prev, optimized]);
+            } catch {
+              setError('이미지 처리 실패');
+            }
+          }
+          break;
+        }
+      }
+    };
+    
+    document.addEventListener('paste', handlePaste);
+    return () => document.removeEventListener('paste', handlePaste);
+  }, []);
+
+  // Handle file input
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files) return;
+    
+    for (const file of files) {
+      if (file.type.startsWith('image/')) {
+        try {
+          const optimized = await optimizeImage(file);
+          setPendingImages((prev) => [...prev, optimized]);
+        } catch {
+          setError('이미지 처리 실패');
+        }
+      }
+    }
+    e.target.value = '';
+  };
+
+  const removeImage = (index: number) => {
+    setPendingImages((prev) => prev.filter((_, i) => i !== index));
+  };
+
   const messages = props.session?.messages ?? [];
 
   useEffect(() => {
@@ -674,7 +744,7 @@ function ChatView(props: {
   }, [input]);
 
   async function send() {
-    if (!input.trim() || loading) return;
+    if ((!input.trim() && pendingImages.length === 0) || loading) return;
 
     let sessionId: string | null = props.session?.id ?? null;
     
@@ -685,20 +755,24 @@ function ChatView(props: {
         setError("Failed to create session");
         return;
       }
-      // Wait for state update
       await new Promise((r) => setTimeout(r, 100));
     }
 
     const userContent = input.trim();
+    const userImages = [...pendingImages];
     setInput("");
+    setPendingImages([]);
     setLoading(true);
     setError("");
 
-    // Save user message to DB
     try {
       const userMsgRes = await props.authedFetch(`/api/sessions/${sessionId}/messages`, {
         method: "POST",
-        body: JSON.stringify({ role: "user", content: userContent }),
+        body: JSON.stringify({ 
+          role: "user", 
+          content: userContent,
+          images: userImages.length > 0 ? userImages : undefined,
+        }),
       });
       const userMsgJson = await userMsgRes.json();
       
@@ -706,13 +780,13 @@ function ChatView(props: {
         id: userMsgJson.message?.id ?? generateId(),
         role: "user",
         content: userContent,
+        images: userImages.length > 0 ? userImages : undefined,
         timestamp: new Date(),
       };
 
       const newMessages = [...messages, userMessage];
       props.onMessagesChange(newMessages);
 
-      // Create placeholder assistant message for streaming
       const assistantId = generateId();
       let assistantContent = "";
       let assistantThinking = "";
@@ -727,18 +801,27 @@ function ChatView(props: {
       };
       props.onMessagesChange([...newMessages, assistantMessage]);
 
-      // Call LLM with streaming
+      // Build messages for API - include images as content parts
+      const apiMessages = newMessages.map((m) => {
+        if (m.images && m.images.length > 0) {
+          const contentParts: Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }> = [];
+          if (m.content) {
+            contentParts.push({ type: "text", text: m.content });
+          }
+          for (const img of m.images) {
+            contentParts.push({ type: "image_url", image_url: { url: img } });
+          }
+          return { role: m.role, content: contentParts };
+        }
+        return { role: m.role, content: m.content };
+      });
+
       const requestBody: Record<string, unknown> = {
-        provider: props.provider,
         model: props.model,
-        messages: newMessages.map((m) => ({ role: m.role, content: m.content })),
+        messages: apiMessages,
+        reasoningEffort: props.reasoningEffort,
+        verbosity: props.verbosity,
       };
-      
-      // GPT-5.2 specific parameters (OpenAI only)
-      if (props.provider === "openai") {
-        requestBody.reasoningEffort = props.reasoningEffort;
-        requestBody.verbosity = props.verbosity;
-      }
 
       if (webSearchEnabled) {
         requestBody.webSearch = { enabled: true, maxResults: webSearchMaxResults };
@@ -846,8 +929,6 @@ function ChatView(props: {
     }
   }
 
-  const providerInfo = PROVIDERS.find((p) => p.id === props.provider);
-
   return (
     <div className="flex h-full flex-col">
       {/* Header */}
@@ -860,61 +941,27 @@ function ChatView(props: {
           >
             <IconMenu />
           </button>
-          <select
-            value={props.provider}
-            onChange={(e) => {
-              const newProvider = e.target.value as Provider;
-              props.setProvider(newProvider);
-              const p = PROVIDERS.find((x) => x.id === newProvider);
-              if (p) props.setModel(p.defaultModel);
-            }}
-            className="rounded-lg border border-[var(--border)] bg-[var(--card)] px-2 py-2 text-sm outline-none transition hover:border-[var(--border-hover)] sm:px-3 sm:py-1.5"
-          >
-            {PROVIDERS.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-          <input
-            value={props.model}
-            onChange={(e) => props.setModel(e.target.value)}
-            className="w-32 rounded-lg border border-[var(--border)] bg-[var(--card)] px-2 py-2 text-sm outline-none transition hover:border-[var(--border-hover)] focus:border-[var(--accent)] sm:w-44 sm:px-3 sm:py-1.5"
-            placeholder="Model"
-          />
-          {/* GPT-5.2 Parameters (OpenAI only) - hide on mobile */}
-          {props.provider === "openai" && (
-            <div className="hidden sm:flex sm:items-center sm:gap-2">
-              <div className="flex items-center gap-1.5">
-                <span className="text-xs text-[var(--muted)]">Reasoning:</span>
-                <select
-                  value={props.reasoningEffort}
-                  onChange={(e) => props.setReasoningEffort(e.target.value as ReasoningEffort)}
-                  className="rounded-lg border border-[var(--border)] bg-[var(--card)] px-2 py-1.5 text-xs outline-none transition hover:border-[var(--border-hover)]"
-                >
-                  {REASONING_EFFORTS.map((r) => (
-                    <option key={r.value} value={r.value}>
-                      {r.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <span className="text-xs text-[var(--muted)]">Verbosity:</span>
-                <select
-                  value={props.verbosity}
-                  onChange={(e) => props.setVerbosity(e.target.value as Verbosity)}
-                  className="rounded-lg border border-[var(--border)] bg-[var(--card)] px-2 py-1.5 text-xs outline-none transition hover:border-[var(--border-hover)]"
-                >
-                  {VERBOSITIES.map((v) => (
-                    <option key={v.value} value={v.value}>
-                      {v.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
+          <span className="rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm text-[var(--muted)]">
+            GPT-5.2
+          </span>
+          
+          {/* Parameters - hide on mobile */}
+          <div className="hidden sm:flex sm:items-center sm:gap-2">
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-[var(--muted)]">추론:</span>
+              <select
+                value={props.reasoningEffort}
+                onChange={(e) => props.setReasoningEffort(e.target.value as ReasoningEffort)}
+                className="rounded-lg border border-[var(--border)] bg-[var(--card)] px-2 py-1.5 text-xs outline-none transition hover:border-[var(--border-hover)]"
+              >
+                {REASONING_EFFORTS.map((r) => (
+                  <option key={r.value} value={r.value}>
+                    {r.label}
+                  </option>
+                ))}
+              </select>
             </div>
-          )}
+          </div>
 
           {/* Web search toggle */}
           <div className="flex items-center gap-2">
@@ -925,7 +972,7 @@ function ChatView(props: {
                 onChange={(e) => setWebSearchEnabled(e.target.checked)}
                 className="accent-[var(--accent)]"
               />
-              Web 검색
+              웹검색
             </label>
             {webSearchEnabled && (
               <select
@@ -934,7 +981,7 @@ function ChatView(props: {
                 className="rounded-lg border border-[var(--border)] bg-[var(--card)] px-2 py-2 text-xs outline-none transition hover:border-[var(--border-hover)] sm:px-3 sm:py-1.5"
                 title="검색 결과 개수"
               >
-                {[3, 5, 7, 10].map((n) => (
+                {[5, 10, 15, 20].map((n) => (
                   <option key={n} value={n}>
                     {n}개
                   </option>
@@ -944,7 +991,7 @@ function ChatView(props: {
           </div>
         </div>
         <div className="hidden text-xs text-[var(--muted)] sm:block">
-          shift + return으로 줄바꿈
+          Ctrl+V로 이미지 붙여넣기
         </div>
       </header>
 
@@ -957,7 +1004,10 @@ function ChatView(props: {
             </div>
             <h2 className="text-base sm:text-lg font-semibold">대화를 시작하세요</h2>
             <p className="mt-2 max-w-sm text-sm text-[var(--muted)]">
-              {providerInfo?.name ?? "OpenAI"}의 {props.model} 모델로 대화합니다
+              {props.model} 모델로 대화합니다
+            </p>
+            <p className="mt-1 text-xs text-[var(--muted)]">
+              이미지를 붙여넣거나 첨부할 수 있어요
             </p>
           </div>
         ) : (
@@ -1011,11 +1061,23 @@ function ChatView(props: {
                   }`}
                 >
                   {msg.role === "user" ? (
-                    <div className="text-sm leading-relaxed whitespace-pre-wrap">
-                      {msg.content}
+                    <div className="text-sm leading-relaxed">
+                      {msg.images && msg.images.length > 0 && (
+                        <div className="mb-2 flex flex-wrap gap-2">
+                          {msg.images.map((img, idx) => (
+                            <img
+                              key={idx}
+                              src={img}
+                              alt={`첨부 이미지 ${idx + 1}`}
+                              className="max-w-[200px] max-h-[200px] rounded-lg object-cover"
+                            />
+                          ))}
+                        </div>
+                      )}
+                      <div className="whitespace-pre-wrap">{msg.content}</div>
                     </div>
                   ) : (
-                    <div className="prose prose-sm prose-invert max-w-none [&_pre]:bg-[#1e1e1e] [&_pre]:rounded-lg [&_pre]:p-4 [&_code]:text-[13px] [&_.katex]:text-[1em] [&_.katex-display]:my-4 [&_.katex-display]:overflow-x-auto [&_p]:my-3 [&_ul]:my-3 [&_ol]:my-3 [&_li]:my-1 [&_br]:block">
+                    <div className="text-sm leading-relaxed prose prose-sm prose-invert max-w-none [&_pre]:bg-[#1e1e1e] [&_pre]:rounded-lg [&_pre]:p-4 [&_code]:text-[13px] [&_.katex]:text-[1em] [&_.katex-display]:my-4 [&_.katex-display]:overflow-x-auto [&_p]:my-2 [&_ul]:my-2 [&_ol]:my-2 [&_li]:my-0.5 [&_br]:block [&_p]:text-sm [&_li]:text-sm">
                       <ReactMarkdown 
                         remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]}
                         rehypePlugins={[rehypeKatex, rehypeHighlight]}
@@ -1084,8 +1146,29 @@ function ChatView(props: {
       )}
 
       {/* Input */}
-      <div className="border-t border-[var(--border)] px-6 py-4">
+      <div className="border-t border-[var(--border)] px-3 py-3 sm:px-6 sm:py-4">
         <div className="mx-auto max-w-3xl">
+          {/* Pending images preview */}
+          {pendingImages.length > 0 && (
+            <div className="mb-3 flex flex-wrap gap-2">
+              {pendingImages.map((img, idx) => (
+                <div key={idx} className="relative group">
+                  <img
+                    src={img}
+                    alt={`첨부 예정 ${idx + 1}`}
+                    className="h-16 w-16 rounded-lg object-cover border border-[var(--border)]"
+                  />
+                  <button
+                    onClick={() => removeImage(idx)}
+                    className="absolute -top-1 -right-1 h-5 w-5 rounded-full bg-red-500 text-white text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition"
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          
           <div className="relative rounded-2xl border border-[var(--border)] bg-[var(--card)] transition focus-within:border-[var(--accent)]">
             <textarea
               ref={textareaRef}
@@ -1094,19 +1177,37 @@ function ChatView(props: {
               onKeyDown={handleKeyDown}
               placeholder="메시지를 입력하세요..."
               rows={1}
-              className="w-full resize-none bg-transparent px-4 py-3 pr-12 text-sm outline-none placeholder:text-[var(--muted)]"
+              className="w-full resize-none bg-transparent px-4 py-3 pr-24 text-sm outline-none placeholder:text-[var(--muted)]"
               disabled={loading}
             />
-            <button
-              onClick={send}
-              disabled={loading || !input.trim()}
-              className="absolute bottom-2 right-2 rounded-lg bg-[var(--accent)] p-2 text-white transition hover:bg-[var(--accent-hover)] disabled:opacity-40 disabled:hover:bg-[var(--accent)]"
-            >
-              <IconSend />
-            </button>
+            <div className="absolute bottom-2 right-2 flex items-center gap-1">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                multiple
+                onChange={handleFileSelect}
+                className="hidden"
+              />
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={loading}
+                className="rounded-lg p-2 text-[var(--muted)] transition hover:bg-[var(--sidebar-hover)] hover:text-white disabled:opacity-40"
+                title="이미지 첨부"
+              >
+                <IconImage />
+              </button>
+              <button
+                onClick={send}
+                disabled={loading || (!input.trim() && pendingImages.length === 0)}
+                className="rounded-lg bg-[var(--accent)] p-2 text-white transition hover:bg-[var(--accent-hover)] disabled:opacity-40 disabled:hover:bg-[var(--accent)]"
+              >
+                <IconSend />
+              </button>
+            </div>
           </div>
           <div className="mt-2 text-center text-xs text-[var(--muted)]">
-            {providerInfo?.name} · {props.model}
+            OpenAI · {props.model}
           </div>
         </div>
       </div>
@@ -1118,13 +1219,10 @@ function KeysPanel(props: {
   authedFetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
   onOpenSidebar: () => void;
 }) {
-  const [items, setItems] = useState<KeyItem[]>([]);
+  const [keyInfo, setKeyInfo] = useState<KeyItem | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>("");
-  const [inputs, setInputs] = useState<Record<Provider, string>>({
-    openai: "",
-    anthropic: "",
-  });
+  const [keyInput, setKeyInput] = useState("");
 
   async function refresh() {
     setLoading(true);
@@ -1133,7 +1231,8 @@ function KeysPanel(props: {
       const res = await props.authedFetch("/api/keys", { method: "GET" });
       const json = await res.json();
       if (!res.ok) throw new Error(json?.error ?? "Failed to load keys");
-      setItems(json.items ?? []);
+      const openaiKey = (json.items ?? []).find((x: { provider: string }) => x.provider === "openai");
+      setKeyInfo(openaiKey ? { key_hint: openaiKey.key_hint, updated_at: openaiKey.updated_at } : null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Unknown error");
     } finally {
@@ -1146,22 +1245,18 @@ function KeysPanel(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function getStatus(provider: Provider) {
-    return items.find((x) => x.provider === provider) ?? null;
-  }
-
-  async function save(provider: Provider) {
+  async function save() {
     setLoading(true);
     setError("");
     try {
-      const apiKey = inputs[provider].trim();
+      const apiKey = keyInput.trim();
       const res = await props.authedFetch("/api/keys", {
         method: "POST",
-        body: JSON.stringify({ provider, apiKey }),
+        body: JSON.stringify({ provider: "openai", apiKey }),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json?.error ?? "Failed to save key");
-      setInputs((prev) => ({ ...prev, [provider]: "" }));
+      setKeyInput("");
       await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Unknown error");
@@ -1170,11 +1265,11 @@ function KeysPanel(props: {
     }
   }
 
-  async function del(provider: Provider) {
+  async function del() {
     setLoading(true);
     setError("");
     try {
-      const res = await props.authedFetch(`/api/keys?provider=${provider}`, {
+      const res = await props.authedFetch(`/api/keys?provider=openai`, {
         method: "DELETE",
       });
       const json = await res.json();
@@ -1197,13 +1292,13 @@ function KeysPanel(props: {
         >
           <IconMenu />
         </button>
-        <h1 className="text-lg font-semibold">API Keys</h1>
+        <h1 className="text-lg font-semibold">API Key</h1>
       </header>
 
       <div className="flex-1 overflow-y-auto p-4 sm:p-6">
         <div className="mx-auto max-w-2xl space-y-4">
           <div className="animate-fade-in hidden lg:block">
-            <h1 className="text-xl font-semibold">API Keys</h1>
+            <h1 className="text-xl font-semibold">OpenAI API Key</h1>
             <p className="mt-1 text-sm text-[var(--muted)]">
               키는 AES-GCM으로 암호화되어 저장됩니다
             </p>
@@ -1212,217 +1307,53 @@ function KeysPanel(props: {
             키는 AES-GCM으로 암호화되어 저장됩니다
           </p>
 
-        {PROVIDERS.map((p, i) => {
-          const s = getStatus(p.id);
-          return (
-            <div
-              key={p.id}
-              className="animate-fade-in rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5"
-              style={{ animationDelay: `${(i + 1) * 80}ms` }}
-            >
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="font-medium">{p.name}</h3>
-                  <p className="text-xs text-[var(--muted)]">
-                    {s?.key_hint ? `저장됨 (${s.key_hint})` : "미설정"}
-                  </p>
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => del(p.id)}
-                    className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-sm transition hover:border-red-500/50 hover:text-red-400 disabled:opacity-50"
-                    disabled={loading}
-                  >
-                    삭제
-                  </button>
-                  <button
-                    onClick={() => save(p.id)}
-                    className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-sm font-medium text-white transition hover:bg-[var(--accent-hover)] disabled:opacity-50"
-                    disabled={loading || inputs[p.id].trim().length < 10}
-                  >
-                    저장
-                  </button>
-                </div>
+          <div className="animate-fade-in rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="font-medium">OpenAI</h3>
+                <p className="text-xs text-[var(--muted)]">
+                  {keyInfo?.key_hint ? `저장됨 (${keyInfo.key_hint})` : "미설정"}
+                </p>
               </div>
-              <input
-                type="password"
-                value={inputs[p.id]}
-                onChange={(e) => setInputs((prev) => ({ ...prev, [p.id]: e.target.value }))}
-                placeholder="API Key 입력"
-                className="mt-3 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm outline-none transition focus:border-[var(--accent)]"
-              />
+              <div className="flex gap-2">
+                <button
+                  onClick={del}
+                  className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-sm transition hover:border-red-500/50 hover:text-red-400 disabled:opacity-50"
+                  disabled={loading}
+                >
+                  삭제
+                </button>
+                <button
+                  onClick={save}
+                  className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-sm font-medium text-white transition hover:bg-[var(--accent-hover)] disabled:opacity-50"
+                  disabled={loading || keyInput.trim().length < 10}
+                >
+                  저장
+                </button>
+              </div>
             </div>
-          );
-        })}
-
-        <button
-          onClick={refresh}
-          disabled={loading}
-          className="rounded-lg border border-[var(--border)] px-4 py-2 text-sm transition hover:border-[var(--border-hover)] disabled:opacity-50"
-        >
-          {loading ? "로딩 중…" : "새로고침"}
-        </button>
-
-        {error && (
-          <div className="animate-fade-in rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-400">
-            {error}
+            <input
+              type="password"
+              value={keyInput}
+              onChange={(e) => setKeyInput(e.target.value)}
+              placeholder="sk-... 형태의 API Key 입력"
+              className="mt-3 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm outline-none transition focus:border-[var(--accent)]"
+            />
           </div>
-        )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ComparePanel(props: {
-  authedFetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-  onOpenSidebar: () => void;
-}) {
-  const [prompt, setPrompt] = useState<string>("");
-  const [targets, setTargets] = useState<Record<Provider, { enabled: boolean; model: string }>>({
-    openai: { enabled: true, model: "gpt-5.2-2025-12-11" },
-    anthropic: { enabled: true, model: "claude-sonnet-4-20250514" },
-  });
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string>("");
-  const [results, setResults] = useState<
-    Array<
-      | { provider: Provider; model: string; ok: true; result: { text: string } }
-      | { provider: Provider; model: string; ok: false; error: string }
-    >
-  >([]);
-
-  async function run() {
-    setLoading(true);
-    setError("");
-    setResults([]);
-    try {
-      const enabledTargets = (Object.keys(targets) as Provider[])
-        .filter((p) => targets[p].enabled)
-        .map((p) => ({ provider: p, model: targets[p].model }));
-
-      const res = await props.authedFetch("/api/compare", {
-        method: "POST",
-        body: JSON.stringify({ prompt, targets: enabledTargets }),
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json?.error ?? "Compare failed");
-      setResults(json.results ?? []);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Unknown error");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  return (
-    <div className="flex flex-1 flex-col overflow-hidden">
-      {/* Mobile header */}
-      <header className="flex items-center gap-3 border-b border-[var(--border)] px-3 py-2 sm:px-6 sm:py-3 lg:hidden">
-        <button
-          onClick={props.onOpenSidebar}
-          className="rounded-lg p-2 hover:bg-[var(--card)]"
-        >
-          <IconMenu />
-        </button>
-        <h1 className="text-lg font-semibold">Compare</h1>
-      </header>
-
-      <div className="flex-1 overflow-y-auto p-4 sm:p-6">
-        <div className="mx-auto max-w-4xl space-y-4">
-          <div className="animate-fade-in hidden lg:block">
-            <h1 className="text-xl font-semibold">Compare</h1>
-            <p className="mt-1 text-sm text-[var(--muted)]">
-              동일한 프롬프트로 여러 모델의 응답을 비교하세요
-            </p>
-          </div>
-          <p className="text-sm text-[var(--muted)] lg:hidden">
-            동일한 프롬프트로 여러 모델의 응답을 비교하세요
-          </p>
-
-        <div className="animate-fade-in rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5" style={{ animationDelay: "80ms" }}>
-          <div className="grid gap-3 sm:grid-cols-2">
-            {PROVIDERS.map((p) => (
-              <label
-                key={p.id}
-                className={`flex cursor-pointer items-start gap-3 rounded-xl border p-3 transition ${
-                  targets[p.id].enabled
-                    ? "border-[var(--accent)] bg-[var(--accent)]/10"
-                    : "border-[var(--border)] hover:border-[var(--border-hover)]"
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  checked={targets[p.id].enabled}
-                  onChange={(e) =>
-                    setTargets((prev) => ({
-                      ...prev,
-                      [p.id]: { ...prev[p.id], enabled: e.target.checked },
-                    }))
-                  }
-                  className="mt-1 accent-[var(--accent)]"
-                />
-                <div className="flex-1">
-                  <div className="text-sm font-medium">{p.name}</div>
-                  <input
-                    value={targets[p.id].model}
-                    onChange={(e) =>
-                      setTargets((prev) => ({
-                        ...prev,
-                        [p.id]: { ...prev[p.id], model: e.target.value },
-                      }))
-                    }
-                    className="mt-2 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2 py-1.5 text-xs outline-none focus:border-[var(--accent)]"
-                  />
-                </div>
-              </label>
-            ))}
-          </div>
-
-          <textarea
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            placeholder="비교할 프롬프트를 입력하세요..."
-            className="mt-4 min-h-28 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
-          />
 
           <button
-            onClick={run}
-            disabled={loading || prompt.trim().length === 0}
-            className="mt-4 rounded-xl bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white transition hover:bg-[var(--accent-hover)] disabled:opacity-50"
+            onClick={refresh}
+            disabled={loading}
+            className="rounded-lg border border-[var(--border)] px-4 py-2 text-sm transition hover:border-[var(--border-hover)] disabled:opacity-50"
           >
-            {loading ? "실행 중…" : "비교 실행"}
+            {loading ? "로딩 중…" : "새로고침"}
           </button>
-        </div>
 
-        {error && (
-          <div className="animate-fade-in rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-400">
-            {error}
-          </div>
-        )}
-
-        {results.length > 0 && (
-          <div className="grid gap-4 md:grid-cols-2">
-            {results.map((r, i) => (
-              <div
-                key={`${r.provider}:${r.model}`}
-                className="animate-fade-in rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5"
-                style={{ animationDelay: `${i * 100}ms` }}
-              >
-                <div className="mb-2 flex items-center gap-2 text-xs text-[var(--muted)]">
-                  <span className="font-medium text-[var(--foreground)]">
-                    {PROVIDERS.find((p) => p.id === r.provider)?.name}
-                  </span>
-                  <span>·</span>
-                  <span>{r.model}</span>
-                </div>
-                <div className="chat-content text-sm leading-relaxed whitespace-pre-wrap">
-                  {r.ok ? r.result.text : <span className="text-red-400">Error: {r.error}</span>}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
+          {error && (
+            <div className="animate-fade-in rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+              {error}
+            </div>
+          )}
         </div>
       </div>
     </div>

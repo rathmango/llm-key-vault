@@ -7,6 +7,7 @@ export const runtime = "nodejs";
 const AddMessageSchema = z.object({
   role: z.enum(["user", "assistant", "system"]),
   content: z.string(),
+  images: z.array(z.string()).optional(), // Base64 data URLs
   thinking: z.string().optional(),
   usage_input_tokens: z.number().optional(),
   usage_output_tokens: z.number().optional(),
@@ -14,8 +15,8 @@ const AddMessageSchema = z.object({
   sources: z
     .array(
       z.object({
-        title: z.string().min(1),
-        url: z.string().url(),
+        title: z.string(),
+        url: z.string(),
       })
     )
     .optional(),
@@ -50,6 +51,7 @@ export async function POST(request: Request, context: RouteContext) {
         session_id: sessionId,
         role: body.role,
         content: body.content,
+        images: body.images,
         thinking: body.thinking,
         usage_input_tokens: body.usage_input_tokens,
         usage_output_tokens: body.usage_output_tokens,

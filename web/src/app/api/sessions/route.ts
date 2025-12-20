@@ -6,7 +6,6 @@ export const runtime = "nodejs";
 
 const CreateSessionSchema = z.object({
   title: z.string().optional(),
-  provider: z.string().min(1),
   model: z.string().min(1),
 });
 
@@ -44,7 +43,7 @@ export async function POST(request: Request) {
       .insert({
         user_id: user.id,
         title: body.title ?? "새 대화",
-        provider: body.provider,
+        provider: "openai",
         model: body.model,
       })
       .select()
@@ -62,3 +61,4 @@ export async function POST(request: Request) {
     return Response.json({ error: message }, { status: 500 });
   }
 }
+

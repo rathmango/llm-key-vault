@@ -1,17 +1,27 @@
 import { z } from "zod";
 
 import { requireUser } from "@/lib/api/auth";
-import { sendChatStream } from "@/lib/llm";
-import { searchWeb, type WebSearchSource } from "@/lib/webSearch";
+import { sendChatStream, loadUserApiKey } from "@/lib/llm";
+import {
+  needsSummarization,
+  splitForSummarization,
+  createSummarizationPrompt,
+  buildMessagesWithSummary,
+  type MessageForContext,
+} from "@/lib/context";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
-const ProviderSchema = z.enum(["openai", "anthropic"]);
+// Support both text and image content
+const ContentPartSchema = z.union([
+  z.object({ type: z.literal("text"), text: z.string() }),
+  z.object({ type: z.literal("image_url"), image_url: z.object({ url: z.string() }) }),
+]);
 
 const MessageSchema = z.object({
   role: z.enum(["system", "user", "assistant"]),
-  content: z.string().min(1),
+  content: z.union([z.string().min(1), z.array(ContentPartSchema).min(1)]),
 });
 
 const ReasoningEffortSchema = z.enum(["none", "low", "medium", "high", "xhigh"]);
@@ -20,39 +30,79 @@ const VerbositySchema = z.enum(["low", "medium", "high"]);
 const WebSearchSchema = z
   .object({
     enabled: z.boolean(),
-    maxResults: z.number().int().min(1).max(10).optional(),
+    maxResults: z.number().int().min(1).max(20).optional(),
   })
   .optional();
 
 const BodySchema = z.object({
-  provider: ProviderSchema,
   model: z.string().min(1),
   messages: z.array(MessageSchema).min(1),
   temperature: z.number().min(0).max(2).optional(),
   maxTokens: z.number().int().min(1).max(32000).optional(),
-  // GPT-5.2 specific
   reasoningEffort: ReasoningEffortSchema.optional(),
   verbosity: VerbositySchema.optional(),
   webSearch: WebSearchSchema,
 });
 
-function formatWebSearchSystemPrompt(query: string, sources: WebSearchSource[]): string {
-  const lines: string[] = [];
-  lines.push("You have access to web search results provided by the system.");
-  lines.push("Use them when relevant, and do not invent sources.");
-  lines.push("When you use them, cite sources inline as [1], [2], ... and include a short 'Sources' section at the end with the URLs.");
-  lines.push("");
-  lines.push(`Query: ${query}`);
-  lines.push("");
-  lines.push("Search results:");
-  for (let i = 0; i < sources.length; i++) {
-    const s = sources[i];
-    lines.push(`[${i + 1}] ${s.title}`);
-    lines.push(`URL: ${s.url}`);
-    if (s.snippet) lines.push(`Snippet: ${s.snippet}`);
-    lines.push("");
+// Quick summarization call (same model, reasoning=none, verbosity=high)
+async function summarizeMessages(
+  apiKey: string,
+  messages: MessageForContext[]
+): Promise<string> {
+  const prompt = createSummarizationPrompt(messages);
+  
+  const res = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: "gpt-5.2-2025-12-11",
+      input: [{ role: "user", content: prompt }],
+      reasoning: { effort: "none" },
+      text: { verbosity: "high" },
+      max_output_tokens: 1000,
+    }),
+  });
+
+  if (!res.ok) {
+    throw new Error("Summarization failed");
   }
-  return lines.join("\n");
+
+  const data = await res.json();
+  // Responses API 응답에서 텍스트 추출
+  const output = data.output ?? [];
+  const textItem = output.find((item: { type: string }) => item.type === "message");
+  return textItem?.content?.[0]?.text ?? "";
+}
+
+// Convert API messages to context format
+function toContextMessages(messages: Array<{ role: string; content: unknown }>): MessageForContext[] {
+  return messages.map((m) => {
+    let content = "";
+    let images: string[] | undefined;
+    
+    if (typeof m.content === "string") {
+      content = m.content;
+    } else if (Array.isArray(m.content)) {
+      const parts = m.content as Array<{ type: string; text?: string; image_url?: { url: string } }>;
+      content = parts
+        .filter((p) => p.type === "text")
+        .map((p) => p.text ?? "")
+        .join("\n");
+      images = parts
+        .filter((p) => p.type === "image_url")
+        .map((p) => p.image_url?.url ?? "")
+        .filter(Boolean);
+    }
+    
+    return {
+      role: m.role as "user" | "assistant" | "system",
+      content,
+      images: images?.length ? images : undefined,
+    };
+  });
 }
 
 function wrapSseStream(
@@ -118,40 +168,34 @@ export async function POST(request: Request) {
     const user = await requireUser(request);
     const body = BodySchema.parse(await request.json());
 
-    let sourcesForUi: Array<{ title: string; url: string }> | null = null;
+    const webSearchEnabled = body.webSearch?.enabled === true;
+    
+    // Check if context needs summarization
     let messages = body.messages;
-    const openAiBuiltinWebSearchEnabled = body.provider === "openai" && body.webSearch?.enabled === true;
-
-    if (body.webSearch?.enabled) {
-      // For OpenAI, prefer the built-in `web_search` tool (Responses API).
-      // For Anthropic, fall back to server-side search injection (requires TAVILY_API_KEY).
-      if (openAiBuiltinWebSearchEnabled) {
-        // No server-side search injection; tools are configured in the OpenAI request.
-      } else {
-      const query =
-        [...body.messages].reverse().find((m) => m.role === "user")?.content?.trim() ||
-        body.messages[body.messages.length - 1]?.content?.trim() ||
-        "";
-
-      if (query) {
-        try {
-          const sources = await searchWeb(query, { maxResults: body.webSearch.maxResults ?? 5 });
-          sourcesForUi = sources.map((s) => ({ title: s.title, url: s.url }));
-
-          const systemMsg = { role: "system" as const, content: formatWebSearchSystemPrompt(query, sources) };
-          const systemMsgs = body.messages.filter((m) => m.role === "system");
-          const rest = body.messages.filter((m) => m.role !== "system");
-          messages = [...systemMsgs, systemMsg, ...rest];
-        } catch {
-          // Best-effort: if web search is not configured (e.g. missing API key) or fails,
-          // continue the chat without injected sources.
+    const contextMessages = toContextMessages(messages);
+    
+    if (needsSummarization(contextMessages, body.model)) {
+      try {
+        const apiKey = await loadUserApiKey(user.id);
+        const { toSummarize, toKeep } = splitForSummarization(contextMessages, 3);
+        
+        if (toSummarize.length > 0) {
+          const summary = await summarizeMessages(apiKey, toSummarize);
+          const summarizedContext = buildMessagesWithSummary(summary, toKeep);
+          
+          // Convert back to API message format
+          messages = summarizedContext.map((m) => ({
+            role: m.role,
+            content: m.content,
+          }));
         }
-      }
+      } catch {
+        // If summarization fails, proceed with original messages
+        // (may fail later due to context limit, but better than blocking)
       }
     }
 
     let stream = await sendChatStream({
-      provider: body.provider,
       model: body.model,
       messages,
       temperature: body.temperature,
@@ -159,11 +203,10 @@ export async function POST(request: Request) {
       userId: user.id,
       reasoningEffort: body.reasoningEffort,
       verbosity: body.verbosity,
-      webSearch: openAiBuiltinWebSearchEnabled ? { enabled: true, toolChoice: "required" } : undefined,
+      webSearch: webSearchEnabled ? { enabled: true, toolChoice: "required" } : undefined,
     });
 
     stream = wrapSseStream(stream, {
-      prefaceEvents: sourcesForUi ? [{ type: "sources", sources: sourcesForUi }] : [],
       heartbeatIntervalMs: 15_000,
     });
 
