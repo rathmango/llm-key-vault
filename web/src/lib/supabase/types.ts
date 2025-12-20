@@ -65,6 +65,7 @@ export type Database = {
           session_id: string;
           role: string;
           content: string;
+          images: string[] | null;
           thinking: string | null;
           sources: unknown | null;
           usage_input_tokens: number | null;
@@ -77,6 +78,7 @@ export type Database = {
           session_id: string;
           role: string;
           content: string;
+          images?: string[] | null;
           thinking?: string | null;
           sources?: unknown | null;
           usage_input_tokens?: number | null;
@@ -85,8 +87,64 @@ export type Database = {
         };
         Update: {
           content?: string;
+          images?: string[] | null;
           thinking?: string | null;
           sources?: unknown | null;
+        };
+        Relationships: [];
+      };
+
+      video_contexts: {
+        Row: {
+          id: string;
+          user_id: string;
+          session_id: string;
+          provider: string;
+          video_id: string;
+          url: string;
+          title: string | null;
+          channel_title: string | null;
+          description: string | null;
+          transcript_language: string | null;
+          transcript_source: string | null;
+          transcript_text: string | null;
+          summary_md: string | null;
+          outline_md: string | null;
+          questions_md: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          session_id: string;
+          provider?: string;
+          video_id: string;
+          url: string;
+          title?: string | null;
+          channel_title?: string | null;
+          description?: string | null;
+          transcript_language?: string | null;
+          transcript_source?: string | null;
+          transcript_text?: string | null;
+          summary_md?: string | null;
+          outline_md?: string | null;
+          questions_md?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          provider?: string;
+          title?: string | null;
+          channel_title?: string | null;
+          description?: string | null;
+          transcript_language?: string | null;
+          transcript_source?: string | null;
+          transcript_text?: string | null;
+          summary_md?: string | null;
+          outline_md?: string | null;
+          questions_md?: string | null;
+          updated_at?: string;
         };
         Relationships: [];
       };

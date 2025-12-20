@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { requireUser } from "@/lib/api/auth";
 import { sendChatStream, loadUserApiKey } from "@/lib/llm";
+import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import {
   needsSummarization,
   splitForSummarization,
@@ -37,12 +38,104 @@ const WebSearchSchema = z
 const BodySchema = z.object({
   model: z.string().min(1),
   messages: z.array(MessageSchema).min(1),
+  sessionId: z.string().min(1).optional(),
   temperature: z.number().min(0).max(2).optional(),
   maxTokens: z.number().int().min(1).max(32000).optional(),
   reasoningEffort: ReasoningEffortSchema.optional(),
   verbosity: VerbositySchema.optional(),
   webSearch: WebSearchSchema,
 });
+
+function extractKeywords(text: string): string[] {
+  const raw = text
+    .toLowerCase()
+    .replace(/https?:\/\/\S+/g, " ")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .split(/\s+/)
+    .map((t) => t.trim())
+    .filter(Boolean);
+
+  const stop = new Set([
+    "the",
+    "a",
+    "an",
+    "and",
+    "or",
+    "to",
+    "of",
+    "in",
+    "on",
+    "for",
+    "with",
+    "is",
+    "are",
+    "was",
+    "were",
+    "이",
+    "그",
+    "저",
+    "것",
+    "수",
+    "좀",
+    "왜",
+    "뭐",
+    "뭔",
+    "어떤",
+    "어떻게",
+    "그리고",
+    "하지만",
+    "또",
+    "내",
+    "나",
+    "너",
+    "우리",
+    "지금",
+    "영상",
+    "유튜브",
+    "youtube",
+  ]);
+
+  const uniq: string[] = [];
+  for (const t of raw) {
+    if (t.length < 2) continue;
+    if (stop.has(t)) continue;
+    if (!uniq.includes(t)) uniq.push(t);
+    if (uniq.length >= 10) break;
+  }
+  return uniq;
+}
+
+function buildTranscriptSnippets(transcript: string, userText: string): string {
+  const lines = transcript.split("\n");
+  const keywords = extractKeywords(userText);
+  if (keywords.length === 0) return "";
+
+  const matches: number[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i].toLowerCase();
+    if (keywords.some((k) => l.includes(k))) {
+      matches.push(i);
+      if (matches.length >= 40) break;
+    }
+  }
+
+  if (matches.length === 0) return "";
+
+  const picked: string[] = [];
+  const seen = new Set<number>();
+  for (const idx of matches) {
+    for (const j of [idx - 1, idx, idx + 1]) {
+      if (j < 0 || j >= lines.length) continue;
+      if (seen.has(j)) continue;
+      seen.add(j);
+      picked.push(lines[j]);
+      if (picked.join("\n").length > 12_000) break;
+    }
+    if (picked.join("\n").length > 12_000) break;
+  }
+
+  return picked.join("\n").trim();
+}
 
 // Quick summarization call (same model, reasoning=none, verbosity=high)
 async function summarizeMessages(
@@ -170,8 +263,66 @@ export async function POST(request: Request) {
 
     const webSearchEnabled = body.webSearch?.enabled === true;
     
-    // Check if context needs summarization
+    // Attach stored video transcript context (if available) WITHOUT printing it.
+    // This enables Lilys-style “always transcript” behind the scenes.
     let messages = body.messages;
+    if (body.sessionId) {
+      try {
+        const supabase = getSupabaseAdmin();
+        const { data: vc } = await supabase
+          .from("video_contexts")
+          .select("title,channel_title,url,summary_md,outline_md,transcript_text,transcript_source,transcript_language")
+          .eq("session_id", body.sessionId)
+          .eq("user_id", user.id)
+          .order("updated_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        const lastUser = [...messages].reverse().find((m) => m.role === "user");
+        const lastUserText =
+          typeof lastUser?.content === "string"
+            ? lastUser.content
+            : Array.isArray(lastUser?.content)
+              ? (lastUser.content as Array<{ type: string; text?: string }>).filter((p) => p.type === "text").map((p) => p.text ?? "").join("\n")
+              : "";
+
+        if (vc && typeof vc.transcript_text === "string" && vc.transcript_text.trim()) {
+          const snippets = buildTranscriptSnippets(vc.transcript_text, lastUserText);
+          const systemLines: string[] = [];
+          systemLines.push("[Video context for this chat session]");
+          if (typeof vc.title === "string" && vc.title.trim()) systemLines.push(`Title: ${vc.title}`);
+          if (typeof vc.channel_title === "string" && vc.channel_title.trim()) systemLines.push(`Channel: ${vc.channel_title}`);
+          if (typeof vc.url === "string" && vc.url.trim()) systemLines.push(`URL: ${vc.url}`);
+          if (typeof vc.transcript_language === "string" && vc.transcript_language.trim()) systemLines.push(`Transcript language: ${vc.transcript_language}`);
+          if (typeof vc.transcript_source === "string" && vc.transcript_source.trim()) systemLines.push(`Transcript source: ${vc.transcript_source}`);
+
+          if (typeof vc.summary_md === "string" && vc.summary_md.trim()) {
+            systemLines.push("");
+            systemLines.push("Summary (md):");
+            systemLines.push(vc.summary_md.trim());
+          }
+
+          if (typeof vc.outline_md === "string" && vc.outline_md.trim()) {
+            systemLines.push("");
+            systemLines.push("Timestamp outline (md):");
+            systemLines.push(vc.outline_md.trim());
+          }
+
+          if (snippets) {
+            systemLines.push("");
+            systemLines.push("Relevant transcript snippets (timestamped). Use these for factual answers; do not quote the entire transcript unless asked:");
+            systemLines.push(snippets);
+          }
+
+          const systemMsg: z.infer<typeof MessageSchema> = { role: "system", content: systemLines.join("\n") };
+          messages = [systemMsg, ...messages];
+        }
+      } catch {
+        // ignore context attach errors
+      }
+    }
+
+    // Check if context needs summarization
     const contextMessages = toContextMessages(messages);
     
     if (needsSummarization(contextMessages, body.model)) {

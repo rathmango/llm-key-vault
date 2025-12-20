@@ -266,9 +266,10 @@ function buildYouTubeAnalyzePrompt(url: string, userText: string, ctx?: YouTubeC
     "Deliverables:",
     "1) Identify the video's title and channel (if available).",
     "2) Summarize the video in 8–12 bullet points (Korean).",
-    "3) Create a timestamped outline (MM:SS) of key moments. Use transcript timestamps when present. If transcript is missing/truncated, be explicit and avoid inventing precise timestamps—use sections instead.",
+    "3) Create a timestamped outline (MM:SS) of key moments. Use transcript timestamps when present.",
     "4) Suggest 5 follow-up questions the user might ask (Korean).",
-    "5) Provide the FULL timestamped transcript under a section titled 'Transcript'. If a transcript is already provided above, copy it verbatim.",
+    "",
+    "Do NOT print the full transcript. The full transcript is stored separately and will be used as hidden context for follow-up Q&A.",
     "",
     isOnlyUrl
       ? "After that, ask: '어떤 관점(요약/비판/투자/실생활)에 집중할까요?'"
@@ -1315,25 +1316,40 @@ function ChatView(props: {
       const youtubeUrls = extractYouTubeUrls(userMessage.content);
       const youtubeUrl = youtubeUrls[0] ?? null;
 
-      let youtubeCtx: YouTubeContext | undefined = undefined;
       if (youtubeUrl) {
-        try {
-          const ctxRes = await props.authedFetch(
-            `/api/youtube/context?url=${encodeURIComponent(youtubeUrl)}&lang=ko`,
-            { method: "GET" }
-          );
-          const ctxJson = await ctxRes.json().catch(() => null);
-          if (ctxRes.ok && ctxJson) {
-            youtubeCtx = ctxJson as YouTubeContext;
-          }
-        } catch {
-          // ignore context fetch failure (fallback to URL-only prompt)
+        // YouTube ingestion pipeline (Gemini transcript + DB 저장) — do not stream full transcript to chat.
+        const ingestRes = await props.authedFetch("/api/youtube/ingest", {
+          method: "POST",
+          body: JSON.stringify({ sessionId: sessionIdFinal, url: youtubeUrl, lang: "ko" }),
+        });
+        const ingestJson = await ingestRes.json().catch(() => ({}));
+        if (!ingestRes.ok) {
+          throw new Error(ingestJson?.error ?? "YouTube ingest failed");
         }
+
+        const assistantContentLocal =
+          typeof ingestJson?.analysis?.markdown === "string"
+            ? (ingestJson.analysis.markdown as string)
+            : "YouTube 컨텍스트 저장 완료 (요약 생성 실패)";
+
+        // Persist assistant message (summary/outlines only)
+        await props.authedFetch(`/api/sessions/${sessionId}/messages`, {
+          method: "POST",
+          body: JSON.stringify({
+            role: "assistant",
+            content: assistantContentLocal,
+          }),
+        });
+
+        // Update UI and exit early (skip OpenAI streaming)
+        props.onMessagesChange(sessionIdFinal, [
+          ...newMessages,
+          { ...assistantMessage, content: assistantContentLocal },
+        ]);
+        return;
       }
 
-      const modelUserContent = youtubeUrl
-        ? buildYouTubeAnalyzePrompt(youtubeUrl, userMessage.content, youtubeCtx)
-        : userMessage.content;
+      const modelUserContent = userMessage.content;
 
       const apiMessages = newMessages.map((m) => {
         if (m.images && m.images.length > 0) {
@@ -1355,6 +1371,7 @@ function ChatView(props: {
         messages: apiMessages,
         reasoningEffort: props.reasoningEffort,
         verbosity: props.verbosity,
+        sessionId: sessionIdFinal,
       };
 
       // Web search is optional; for YouTube we prefer server-fetched metadata/transcript to avoid throttling.
