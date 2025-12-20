@@ -135,6 +135,21 @@ const IconLogout = () => (
   </svg>
 );
 
+const IconMenu = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <line x1="3" y1="12" x2="21" y2="12"></line>
+    <line x1="3" y1="6" x2="21" y2="6"></line>
+    <line x1="3" y1="18" x2="21" y2="18"></line>
+  </svg>
+);
+
+const IconClose = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <line x1="18" y1="6" x2="6" y2="18"></line>
+    <line x1="6" y1="6" x2="18" y2="18"></line>
+  </svg>
+);
+
 function generateId(): string {
   return Math.random().toString(36).substring(2) + Date.now().toString(36);
 }
@@ -157,6 +172,7 @@ export default function Home() {
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
   const [session, setSession] = useState<Session | null>(null);
   const [activeTab, setActiveTab] = useState<"chat" | "keys" | "compare">("chat");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   
   // Chat state
   const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -382,13 +398,40 @@ export default function Home() {
 
   return (
     <div className="flex h-screen overflow-hidden bg-[var(--background)]">
+      {/* Mobile overlay */}
+      {sidebarOpen && (
+        <div 
+          className="fixed inset-0 z-40 bg-black/50 lg:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+
       {/* Sidebar */}
-      <aside className="flex w-64 flex-col border-r border-[var(--border)] bg-[var(--sidebar)]">
+      <aside className={`
+        fixed inset-y-0 left-0 z-50 flex w-72 flex-col border-r border-[var(--border)] bg-[var(--sidebar)]
+        transform transition-transform duration-300 ease-in-out
+        lg:relative lg:translate-x-0 lg:w-64
+        ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
+      `}>
+        {/* Mobile close button */}
+        <div className="flex items-center justify-between p-3 lg:hidden">
+          <span className="text-sm font-medium">메뉴</span>
+          <button
+            onClick={() => setSidebarOpen(false)}
+            className="rounded-lg p-2 hover:bg-[var(--sidebar-hover)]"
+          >
+            <IconClose />
+          </button>
+        </div>
+
         {/* New Chat Button */}
         <div className="p-3">
           <button
-            onClick={createNewSession}
-            className="flex w-full items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-2.5 text-sm font-medium transition hover:border-[var(--border-hover)] hover:bg-[var(--card-hover)]"
+            onClick={() => {
+              createNewSession();
+              setSidebarOpen(false);
+            }}
+            className="flex w-full items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-3 text-sm font-medium transition hover:border-[var(--border-hover)] hover:bg-[var(--card-hover)] active:scale-[0.98]"
           >
             <IconPlus />
             새 대화
@@ -399,21 +442,30 @@ export default function Home() {
         <nav className="px-3">
           <NavButton 
             active={activeTab === "chat"} 
-            onClick={() => setActiveTab("chat")}
+            onClick={() => {
+              setActiveTab("chat");
+              setSidebarOpen(false);
+            }}
             icon={<IconChat />}
           >
             Chat
           </NavButton>
           <NavButton 
             active={activeTab === "keys"} 
-            onClick={() => setActiveTab("keys")}
+            onClick={() => {
+              setActiveTab("keys");
+              setSidebarOpen(false);
+            }}
             icon={<IconKey />}
           >
             API Keys
           </NavButton>
           <NavButton 
             active={activeTab === "compare"} 
-            onClick={() => setActiveTab("compare")}
+            onClick={() => {
+              setActiveTab("compare");
+              setSidebarOpen(false);
+            }}
             icon={<IconCompare />}
           >
             Compare
@@ -438,8 +490,9 @@ export default function Home() {
                       setCurrentSessionId(s.id);
                       setProvider(s.provider);
                       setModel(s.model);
+                      setSidebarOpen(false);
                     }}
-                    className={`w-full rounded-lg px-3 py-2 text-left text-sm transition ${
+                    className={`w-full rounded-lg px-3 py-3 text-left text-sm transition active:scale-[0.98] ${
                       currentSessionId === s.id
                         ? "bg-[var(--accent)]/20 text-[var(--accent-hover)]"
                         : "hover:bg-[var(--sidebar-hover)]"
@@ -452,7 +505,7 @@ export default function Home() {
                   </button>
                   <button
                     onClick={() => deleteSession(s.id)}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 opacity-0 transition hover:bg-red-500/20 hover:text-red-400 group-hover:opacity-100"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-2 opacity-0 transition hover:bg-red-500/20 hover:text-red-400 group-hover:opacity-100"
                   >
                     <IconTrash />
                   </button>
@@ -464,13 +517,13 @@ export default function Home() {
 
         {/* User info */}
         <div className="mt-auto border-t border-[var(--border)] p-3">
-          <div className="flex items-center justify-between rounded-lg px-2 py-1.5">
+          <div className="flex items-center justify-between rounded-lg px-2 py-2">
             <div className="truncate text-sm text-[var(--muted)]">
               {user.email?.split("@")[0]}
             </div>
             <button
               onClick={signOut}
-              className="rounded p-1.5 text-[var(--muted)] transition hover:bg-[var(--sidebar-hover)] hover:text-white"
+              className="rounded p-2 text-[var(--muted)] transition hover:bg-[var(--sidebar-hover)] hover:text-white"
               title="로그아웃"
             >
               <IconLogout />
@@ -499,10 +552,11 @@ export default function Home() {
               }
             }}
             onCreateSession={createNewSession}
+            onOpenSidebar={() => setSidebarOpen(true)}
           />
         )}
-        {activeTab === "keys" && <KeysPanel authedFetch={authedFetch} />}
-        {activeTab === "compare" && <ComparePanel authedFetch={authedFetch} />}
+        {activeTab === "keys" && <KeysPanel authedFetch={authedFetch} onOpenSidebar={() => setSidebarOpen(true)} />}
+        {activeTab === "compare" && <ComparePanel authedFetch={authedFetch} onOpenSidebar={() => setSidebarOpen(true)} />}
       </main>
     </div>
   );
@@ -542,6 +596,7 @@ function ChatView(props: {
   authedFetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
   onMessagesChange: (messages: Message[]) => void;
   onCreateSession: () => Promise<string | null>;
+  onOpenSidebar: () => void;
 }) {
   const [thinkingExpanded, setThinkingExpanded] = useState<Record<string, boolean>>({});
   const [input, setInput] = useState("");
@@ -725,8 +780,15 @@ function ChatView(props: {
   return (
     <div className="flex h-full flex-col">
       {/* Header */}
-      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] px-6 py-3">
+      <header className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--border)] px-3 py-2 sm:px-6 sm:py-3 sm:gap-3">
         <div className="flex flex-wrap items-center gap-2">
+          {/* Mobile menu button */}
+          <button
+            onClick={props.onOpenSidebar}
+            className="rounded-lg p-2 hover:bg-[var(--card)] lg:hidden"
+          >
+            <IconMenu />
+          </button>
           <select
             value={props.provider}
             onChange={(e) => {
@@ -735,7 +797,7 @@ function ChatView(props: {
               const p = PROVIDERS.find((x) => x.id === newProvider);
               if (p) props.setModel(p.defaultModel);
             }}
-            className="rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-1.5 text-sm outline-none transition hover:border-[var(--border-hover)]"
+            className="rounded-lg border border-[var(--border)] bg-[var(--card)] px-2 py-2 text-sm outline-none transition hover:border-[var(--border-hover)] sm:px-3 sm:py-1.5"
           >
             {PROVIDERS.map((p) => (
               <option key={p.id} value={p.id}>
@@ -746,12 +808,12 @@ function ChatView(props: {
           <input
             value={props.model}
             onChange={(e) => props.setModel(e.target.value)}
-            className="w-44 rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-1.5 text-sm outline-none transition hover:border-[var(--border-hover)] focus:border-[var(--accent)]"
+            className="w-32 rounded-lg border border-[var(--border)] bg-[var(--card)] px-2 py-2 text-sm outline-none transition hover:border-[var(--border-hover)] focus:border-[var(--accent)] sm:w-44 sm:px-3 sm:py-1.5"
             placeholder="Model"
           />
-          {/* GPT-5.2 Parameters (OpenAI only) */}
+          {/* GPT-5.2 Parameters (OpenAI only) - hide on mobile */}
           {props.provider === "openai" && (
-            <>
+            <div className="hidden sm:flex sm:items-center sm:gap-2">
               <div className="flex items-center gap-1.5">
                 <span className="text-xs text-[var(--muted)]">Reasoning:</span>
                 <select
@@ -780,28 +842,28 @@ function ChatView(props: {
                   ))}
                 </select>
               </div>
-            </>
+            </div>
           )}
         </div>
-        <div className="text-xs text-[var(--muted)]">
+        <div className="hidden text-xs text-[var(--muted)] sm:block">
           shift + return으로 줄바꿈
         </div>
       </header>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-6 py-4">
+      <div className="flex-1 overflow-y-auto px-3 py-3 sm:px-6 sm:py-4">
         {messages.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center text-center animate-fade-in">
-            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-[var(--accent)]/20">
+          <div className="flex h-full flex-col items-center justify-center text-center animate-fade-in px-4">
+            <div className="mx-auto mb-4 flex h-14 w-14 sm:h-16 sm:w-16 items-center justify-center rounded-2xl bg-[var(--accent)]/20">
               <IconChat />
             </div>
-            <h2 className="text-lg font-semibold">대화를 시작하세요</h2>
+            <h2 className="text-base sm:text-lg font-semibold">대화를 시작하세요</h2>
             <p className="mt-2 max-w-sm text-sm text-[var(--muted)]">
               {providerInfo?.name ?? "OpenAI"}의 {props.model} 모델로 대화합니다
             </p>
           </div>
         ) : (
-          <div className="mx-auto max-w-3xl space-y-4">
+          <div className="mx-auto max-w-3xl space-y-3 sm:space-y-4">
             {messages.map((msg, i) => (
               <div
                 key={msg.id}
@@ -936,6 +998,7 @@ function ChatView(props: {
 
 function KeysPanel(props: {
   authedFetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+  onOpenSidebar: () => void;
 }) {
   const [items, setItems] = useState<KeyItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -1007,14 +1070,29 @@ function KeysPanel(props: {
   }
 
   return (
-    <div className="flex-1 overflow-y-auto p-6">
-      <div className="mx-auto max-w-2xl space-y-4">
-        <div className="animate-fade-in">
-          <h1 className="text-xl font-semibold">API Keys</h1>
-          <p className="mt-1 text-sm text-[var(--muted)]">
+    <div className="flex flex-1 flex-col overflow-hidden">
+      {/* Mobile header */}
+      <header className="flex items-center gap-3 border-b border-[var(--border)] px-3 py-2 sm:px-6 sm:py-3 lg:hidden">
+        <button
+          onClick={props.onOpenSidebar}
+          className="rounded-lg p-2 hover:bg-[var(--card)]"
+        >
+          <IconMenu />
+        </button>
+        <h1 className="text-lg font-semibold">API Keys</h1>
+      </header>
+
+      <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+        <div className="mx-auto max-w-2xl space-y-4">
+          <div className="animate-fade-in hidden lg:block">
+            <h1 className="text-xl font-semibold">API Keys</h1>
+            <p className="mt-1 text-sm text-[var(--muted)]">
+              키는 AES-GCM으로 암호화되어 저장됩니다
+            </p>
+          </div>
+          <p className="text-sm text-[var(--muted)] lg:hidden">
             키는 AES-GCM으로 암호화되어 저장됩니다
           </p>
-        </div>
 
         {PROVIDERS.map((p, i) => {
           const s = getStatus(p.id);
@@ -1072,6 +1150,7 @@ function KeysPanel(props: {
             {error}
           </div>
         )}
+        </div>
       </div>
     </div>
   );
@@ -1079,6 +1158,7 @@ function KeysPanel(props: {
 
 function ComparePanel(props: {
   authedFetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+  onOpenSidebar: () => void;
 }) {
   const [prompt, setPrompt] = useState<string>("");
   const [targets, setTargets] = useState<Record<Provider, { enabled: boolean; model: string }>>({
@@ -1118,14 +1198,29 @@ function ComparePanel(props: {
   }
 
   return (
-    <div className="flex-1 overflow-y-auto p-6">
-      <div className="mx-auto max-w-4xl space-y-4">
-        <div className="animate-fade-in">
-          <h1 className="text-xl font-semibold">Compare</h1>
-          <p className="mt-1 text-sm text-[var(--muted)]">
+    <div className="flex flex-1 flex-col overflow-hidden">
+      {/* Mobile header */}
+      <header className="flex items-center gap-3 border-b border-[var(--border)] px-3 py-2 sm:px-6 sm:py-3 lg:hidden">
+        <button
+          onClick={props.onOpenSidebar}
+          className="rounded-lg p-2 hover:bg-[var(--card)]"
+        >
+          <IconMenu />
+        </button>
+        <h1 className="text-lg font-semibold">Compare</h1>
+      </header>
+
+      <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+        <div className="mx-auto max-w-4xl space-y-4">
+          <div className="animate-fade-in hidden lg:block">
+            <h1 className="text-xl font-semibold">Compare</h1>
+            <p className="mt-1 text-sm text-[var(--muted)]">
+              동일한 프롬프트로 여러 모델의 응답을 비교하세요
+            </p>
+          </div>
+          <p className="text-sm text-[var(--muted)] lg:hidden">
             동일한 프롬프트로 여러 모델의 응답을 비교하세요
           </p>
-        </div>
 
         <div className="animate-fade-in rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5" style={{ animationDelay: "80ms" }}>
           <div className="grid gap-3 sm:grid-cols-2">
@@ -1210,6 +1305,7 @@ function ComparePanel(props: {
             ))}
           </div>
         )}
+        </div>
       </div>
     </div>
   );
