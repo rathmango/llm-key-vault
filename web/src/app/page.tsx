@@ -822,22 +822,16 @@ function HomeView(props: {
   onOpenSidebar: () => void;
   onStartDraft: (draft: Draft) => void;
 }) {
-  type Category = "all" | "finance" | "parenting" | "creator" | "it";
+  type Category = "finance" | "parenting" | "creator" | "it";
 
   const CATEGORIES: Array<{ id: Category; label: string }> = [
-    { id: "all", label: "All" },
-    { id: "finance", label: "Finance/Investing" },
-    { id: "parenting", label: "Pregnancy/Baby" },
-    { id: "creator", label: "Creator" },
-    { id: "it", label: "IT/Dev" },
+    { id: "finance", label: "경제/투자" },
+    { id: "parenting", label: "출산/육아" },
+    { id: "creator", label: "크리에이터" },
+    { id: "it", label: "IT/개발" },
   ];
 
   const STARTERS: Record<Category, Array<{ label: string; prompt: string }>> = {
-    all: [
-      { label: "오늘 이야기할 주제 추천", prompt: "내가 대화 주제를 잘 못 정해. 오늘 이야기할 주제 5개만 추천해줘. (경제/출산/육아/릴스/일상 중에서)" },
-      { label: "최근 이슈 3줄 요약", prompt: "오늘 한국 경제/정책에서 중요한 이슈 5개를 3줄 요약으로 알려주고, 각각 '왜 중요한지'도 1줄씩 설명해줘." },
-      { label: "해야 할 일 정리", prompt: "지금 머리가 복잡해. 해야 할 일을 우선순위로 정리해줘. 먼저 질문 5개만 해서 정보 수집해줘." },
-    ],
     finance: [
       { label: "금리/환율 브리핑", prompt: "오늘 한국 기준으로 금리/환율/부동산 흐름을 빠르게 브리핑해줘. 핵심만 10줄 이내로." },
       { label: "뉴스 읽는 법", prompt: "경제 뉴스를 볼 때 체크해야 할 관점(금리, 인플레, 실적, 정책)을 프레임워크로 만들어줘." },
@@ -861,7 +855,7 @@ function HomeView(props: {
   };
 
   const [topic, setTopic] = useState("");
-  const [category, setCategory] = useState<Category>("all");
+  const [category, setCategory] = useState<Category>("finance");
 
   type YouTubeRecItem = {
     videoId: string;
@@ -882,7 +876,7 @@ function HomeView(props: {
   const reloadYouTube = () => setYtReloadNonce((n) => n + 1);
   const { authedFetch } = props;
 
-  const starters = STARTERS[category] ?? STARTERS.all;
+  const starters = STARTERS[category] ?? STARTERS.finance;
 
   useEffect(() => {
     let cancelled = false;

@@ -2,7 +2,7 @@ import { requireUser } from "@/lib/api/auth";
 
 export const runtime = "nodejs";
 
-type Category = "all" | "finance" | "parenting" | "creator" | "it";
+type Category = "finance" | "parenting" | "creator" | "it";
 
 type YouTubeRecommendationItem = {
   videoId: string;
@@ -60,7 +60,7 @@ function normalizeText(s: string): string {
   return s.toLowerCase();
 }
 
-const CATEGORY_QUERIES: Record<Exclude<Category, "all">, string> = {
+const CATEGORY_QUERIES: Record<Category, string> = {
   finance: "한국 경제 금리 환율 주식 부동산",
   parenting: "임신 출산 신생아 육아 산후조리",
   creator: "인스타 릴스 reels shorts 편집 캡컷",
@@ -68,10 +68,9 @@ const CATEGORY_QUERIES: Record<Exclude<Category, "all">, string> = {
 };
 
 function matchesCategory(item: YouTubeRecommendationItem, category: Category): boolean {
-  if (category === "all") return true;
   const hay = normalizeText(`${item.title}\n${item.channelTitle}`);
 
-  const KEYWORDS: Record<Exclude<Category, "all">, string[]> = {
+  const KEYWORDS: Record<Category, string[]> = {
     finance: [
       "경제",
       "금리",
@@ -328,13 +327,13 @@ export async function GET(request: Request) {
     }
 
     const url = new URL(request.url);
-    const categoryRaw = (url.searchParams.get("category") ?? "all").trim();
+    const categoryRaw = (url.searchParams.get("category") ?? "finance").trim();
     const maxResultsRaw = url.searchParams.get("maxResults") ?? "12";
     const refresh = (url.searchParams.get("refresh") ?? "").trim();
 
-    const category = (["all", "finance", "parenting", "creator", "it"].includes(categoryRaw)
+    const category = (["finance", "parenting", "creator", "it"].includes(categoryRaw)
       ? categoryRaw
-      : "all") as Category;
+      : "finance") as Category;
     const maxResults = clampInt(parseInt(maxResultsRaw, 10), 1, 24);
 
     // Cache for a short TTL (fast UX + reduced quota).
@@ -344,20 +343,15 @@ export async function GET(request: Request) {
     let cache = getCache(category);
     const bypassCache = refresh !== "" && refresh !== "0";
     if (bypassCache || !cache || now - cache.fetchedAtMs > ttlMs) {
-      const items =
-        category === "all"
-          ? await fetchTrendingKR(apiKey)
-          : await fetchSearchKR(apiKey, CATEGORY_QUERIES[category]);
+      const items = await fetchSearchKR(apiKey, CATEGORY_QUERIES[category]);
       cache = { fetchedAtMs: now, items };
       setCache(category, cache);
     }
 
     const items = cache.items;
 
-    // For non-all categories, be strict: no "fill with random trending".
-    // If search results are sparse, we optionally apply a keyword filter as a last sanity check.
-    const strictFiltered =
-      category === "all" ? items : items.filter((it) => matchesCategory(it, category));
+    // Apply keyword filter as a sanity check
+    const strictFiltered = items.filter((it) => matchesCategory(it, category));
 
     const picked = strictFiltered.slice(0, maxResults);
 
@@ -366,11 +360,8 @@ export async function GET(request: Request) {
       meta: {
         regionCode: "KR",
         category,
-        source:
-          category === "all"
-            ? "videos.list(chart=mostPopular)"
-            : "search.list(type=video,order=viewCount,publishedAfter=180d)+keyword-sanity-filter",
-        query: category === "all" ? null : CATEGORY_QUERIES[category],
+        source: "search.list(type=video,order=viewCount,publishedAfter=180d)+keyword-sanity-filter",
+        query: CATEGORY_QUERIES[category],
         fetchedAt: new Date(cache.fetchedAtMs).toISOString(),
         ttlSeconds: Math.floor(ttlMs / 1000),
       },
