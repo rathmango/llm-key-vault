@@ -6,6 +6,7 @@ import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
+import remarkBreaks from "remark-breaks";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
 import "katex/dist/katex.min.css";
@@ -1014,9 +1015,9 @@ function ChatView(props: {
                       {msg.content}
                     </div>
                   ) : (
-                    <div className="prose prose-sm prose-invert max-w-none [&_pre]:bg-[#1e1e1e] [&_pre]:rounded-lg [&_pre]:p-4 [&_code]:text-[13px] [&_.katex]:text-[1em] [&_.katex-display]:my-4 [&_.katex-display]:overflow-x-auto">
+                    <div className="prose prose-sm prose-invert max-w-none [&_pre]:bg-[#1e1e1e] [&_pre]:rounded-lg [&_pre]:p-4 [&_code]:text-[13px] [&_.katex]:text-[1em] [&_.katex-display]:my-4 [&_.katex-display]:overflow-x-auto [&_p]:my-3 [&_ul]:my-3 [&_ol]:my-3 [&_li]:my-1 [&_br]:block">
                       <ReactMarkdown 
-                        remarkPlugins={[remarkGfm, remarkMath]}
+                        remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]}
                         rehypePlugins={[rehypeKatex, rehypeHighlight]}
                       >
                         {normalizeLatex(msg.content)}
