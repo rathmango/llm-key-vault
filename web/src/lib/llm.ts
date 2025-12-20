@@ -94,16 +94,24 @@ async function callOpenAI(params: {
     messages: params.messages,
   };
 
-  // GPT-5.2 specific parameters
-  if (params.reasoningEffort !== undefined) {
-    body.reasoning_effort = params.reasoningEffort;
+  // GPT-5.2 specific parameters - use proper nested structure
+  const isReasoningModel = params.model.includes("gpt-5") || params.model.includes("o1") || params.model.includes("o3");
+  
+  if (isReasoningModel && params.reasoningEffort && params.reasoningEffort !== "none") {
+    body.reasoning = {
+      effort: params.reasoningEffort,
+      summary: "auto", // Request reasoning summary
+    };
   }
+  
   if (params.verbosity !== undefined) {
-    body.verbosity = params.verbosity;
+    body.text = {
+      verbosity: params.verbosity,
+    };
   }
 
-  // temperature/top_p only supported when reasoning_effort is "none" or undefined
-  if (!params.reasoningEffort || params.reasoningEffort === "none") {
+  // temperature/top_p only supported when NOT using reasoning
+  if (!isReasoningModel || !params.reasoningEffort || params.reasoningEffort === "none") {
     if (params.temperature !== undefined) {
       body.temperature = params.temperature;
     }
@@ -111,6 +119,8 @@ async function callOpenAI(params: {
   if (params.maxTokens !== undefined) {
     body.max_tokens = params.maxTokens;
   }
+
+  console.log("OpenAI request body:", JSON.stringify(body, null, 2));
 
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -137,13 +147,24 @@ async function callOpenAI(params: {
   const choice = data?.choices?.[0];
   const text: string = choice?.message?.content ?? "";
   
-  // GPT-5.2 returns reasoning summary in message.reasoning or message.reasoning_content
-  // Also check for reasoning_summary which some models use
-  const thinking: string | undefined = 
+  // GPT-5.2 reasoning summary locations:
+  // 1. message.reasoning_content (most common)
+  // 2. message.reasoning (alternative)
+  // 3. reasoning array with summary items
+  let thinking: string | undefined = 
     choice?.message?.reasoning_content ?? 
     choice?.message?.reasoning ?? 
-    choice?.message?.reasoning_summary ??
     undefined;
+  
+  // Check for reasoning array with summaries
+  if (!thinking && Array.isArray(data?.reasoning)) {
+    const summaries = data.reasoning
+      .filter((r: { type?: string; summary?: string }) => r.type === "summary" && r.summary)
+      .map((r: { summary: string }) => r.summary);
+    if (summaries.length > 0) {
+      thinking = summaries.join("\n\n");
+    }
+  }
   
   console.log("Parsed thinking:", thinking);
 
