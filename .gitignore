@@ -1,0 +1,23 @@
+.DS_Store
+
+# SwiftPM
+.build/
+.swiftpm/
+
+# Xcode (if you generate/open a project later)
+*.xcworkspace
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/
+DerivedData/
+
+# Node / Next.js
+node_modules/
+web/node_modules/
+web/.next/
+web/out/
+web/.env*
+web/.vercel/
+
+# Supabase
+.supabase/
+
