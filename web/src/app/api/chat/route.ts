@@ -203,7 +203,8 @@ export async function POST(request: Request) {
       userId: user.id,
       reasoningEffort: body.reasoningEffort,
       verbosity: body.verbosity,
-      webSearch: webSearchEnabled ? { enabled: true, toolChoice: "required" } : undefined,
+      // Allow (not force) the model to use web_search. Forcing tool usage can cause throttling on some sources.
+      webSearch: webSearchEnabled ? { enabled: true, toolChoice: "auto" } : undefined,
     });
 
     stream = wrapSseStream(stream, {
