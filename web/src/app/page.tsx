@@ -1119,7 +1119,7 @@ function ChatView(props: {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>("");
-  const [webSearchEnabled, setWebSearchEnabled] = useState(true);
+  const [webSearchEnabled, setWebSearchEnabled] = useState(false);
   const [webSearchMaxResults, setWebSearchMaxResults] = useState(10);
   const [pendingImages, setPendingImages] = useState<string[]>([]);
   const [collapsedMessages, setCollapsedMessages] = useState(true); // Collapse old messages by default
@@ -1420,8 +1420,26 @@ function ChatView(props: {
         sessionId: sessionIdFinal,
       };
 
-      // Web search is optional; for YouTube we prefer server-fetched metadata/transcript to avoid throttling.
-      if (webSearchEnabled && !youtubeUrl) {
+      // Web search: auto-detect if query needs real-time info, or use manual toggle
+      const needsWebSearch = (() => {
+        if (youtubeUrl) return false; // YouTube has its own context pipeline
+        if (webSearchEnabled) return true; // Manual toggle on
+        
+        // Auto-detect: keywords that typically need current/real-time info
+        const q = userContentOriginal.toLowerCase();
+        const realtimeKeywords = [
+          "오늘", "현재", "지금", "최근", "최신", "요즘",
+          "뉴스", "속보", "이슈",
+          "주가", "환율", "금리", "시세", "코스피", "코스닥", "나스닥", "비트코인",
+          "날씨", "기온",
+          "경기", "스코어", "순위",
+          "today", "current", "latest", "recent", "news",
+          "stock", "price", "rate", "weather",
+        ];
+        return realtimeKeywords.some((kw) => q.includes(kw));
+      })();
+      
+      if (needsWebSearch) {
         requestBody.webSearch = { enabled: true, maxResults: webSearchMaxResults };
       }
       
