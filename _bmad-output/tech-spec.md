@@ -37,3 +37,39 @@
 - `web/src/app/page.tsx` - 스크롤 핸들러, 접기 UI
 - `package.json` - virtualization 라이브러리 (필요시)
 
+---
+
+## 버그 수정: 마크다운 렌더링
+
+### 문제
+1. **취소선 오작동**: "10~15년~20년" 에서 `~15년~` 이 취소선으로 렌더링됨
+   - 원인: `remark-gfm` 플러그인이 단일 `~`도 취소선으로 인식
+2. **볼드 미적용**: `**텍스트**` 가 그대로 출력됨
+   - 원인: 텍스트 앞뒤에 공백/특수문자가 있거나 `normalizeLatex` 함수가 간섭
+
+### 분석
+현재 설정:
+```jsx
+<ReactMarkdown 
+  remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]}
+  rehypePlugins={[rehypeKatex, rehypeHighlight]}
+>
+  {normalizeLatex(msg.content)}
+</ReactMarkdown>
+```
+
+`remark-gfm` 의 strikethrough 기능이 한글 텍스트 내 `~` 문자를 잘못 해석.
+
+### 해결 방안
+1. **Option A**: `remark-gfm` 에서 strikethrough만 비활성화
+   - `remarkGfm` 대신 개별 플러그인 사용 (tables, autolinks만)
+2. **Option B**: 텍스트 전처리에서 `~` 이스케이프
+3. **Option C**: 다른 마크다운 라이브러리로 교체
+
+### 선택: Option A
+- `remark-gfm` 플러그인 옵션으로 `singleTilde: false` 설정
+- 볼드 문제는 추가 분석 필요
+
+### 파일 변경
+- `web/src/app/page.tsx` - ReactMarkdown 설정 수정
+

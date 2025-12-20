@@ -39,9 +39,7 @@ function normalizeLatex(text: string): string {
     // Inline math: \(...\) → $...$
     .replace(/\\\(([\s\S]*?)\\\)/g, (_, content) => `$${content.trim()}$`)
     // Handle [ ... ] with common LaTeX commands (heuristic)
-    .replace(/\[\s*([^[\]]*(?:\\(?:frac|sqrt|sum|int|lim|prod|cdot|times|div|pm|mp|leq|geq|neq|approx|equiv|propto|infty|partial|nabla|alpha|beta|gamma|delta|theta|pi|sigma|omega|phi|psi|lambda|mu|nu|rho|tau|epsilon|zeta|eta|kappa|xi|chi|text|mathrm|mathbf|mathit|left|right|big|Big|bigg|Bigg)[^[\]]*)+)\s*\]/g, (_, content) => `$$${content.trim()}$$`)
-    // Fix common patterns where ** bold ** breaks in math context
-    .replace(/\*\*([^*]+)\*\*/g, '**$1**');
+    .replace(/\[\s*([^[\]]*(?:\\(?:frac|sqrt|sum|int|lim|prod|cdot|times|div|pm|mp|leq|geq|neq|approx|equiv|propto|infty|partial|nabla|alpha|beta|gamma|delta|theta|pi|sigma|omega|phi|psi|lambda|mu|nu|rho|tau|epsilon|zeta|eta|kappa|xi|chi|text|mathrm|mathbf|mathit|left|right|big|Big|bigg|Bigg)[^[\]]*)+)\s*\]/g, (_, content) => `$$${content.trim()}$$`);
 }
 
 type Source = {
@@ -1201,7 +1199,11 @@ function ChatView(props: {
                   ) : (
                     <div className="text-sm leading-relaxed prose prose-sm prose-invert max-w-none [&_pre]:bg-[#1e1e1e] [&_pre]:rounded-lg [&_pre]:p-4 [&_code]:text-[13px] [&_.katex]:text-[1em] [&_.katex-display]:my-4 [&_.katex-display]:overflow-x-auto [&_p]:my-2 [&_ul]:my-2 [&_ol]:my-2 [&_li]:my-0.5 [&_br]:block [&_p]:text-sm [&_li]:text-sm">
                       <ReactMarkdown 
-                        remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]}
+                        remarkPlugins={[
+                          [remarkGfm, { singleTilde: false }],
+                          remarkMath,
+                          remarkBreaks
+                        ]}
                         rehypePlugins={[rehypeKatex, rehypeHighlight]}
                       >
                         {normalizeLatex(msg.content)}
