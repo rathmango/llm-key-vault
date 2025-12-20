@@ -193,7 +193,7 @@ export default function Home() {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [model, setModel] = useState<string>(DEFAULT_MODEL);
-  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("medium");
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("xhigh");
   const [verbosity, setVerbosity] = useState<Verbosity>("medium");
 
   useEffect(() => {
