@@ -10,9 +10,11 @@ export type ChatMessage = {
 
 export type ChatResponse = {
   text: string;
+  thinking?: string;
   usage?: {
     inputTokens?: number;
     outputTokens?: number;
+    reasoningTokens?: number;
     totalTokens?: number;
   };
 };
@@ -129,16 +131,25 @@ async function callOpenAI(params: {
     throw new Error(message);
   }
 
-  const text: string = data?.choices?.[0]?.message?.content ?? "";
+  const choice = data?.choices?.[0];
+  const text: string = choice?.message?.content ?? "";
+  
+  // GPT-5.2 returns reasoning summary in message.reasoning or message.reasoning_content
+  const thinking: string | undefined = 
+    choice?.message?.reasoning_content ?? 
+    choice?.message?.reasoning ?? 
+    undefined;
+
   const usage = data?.usage
     ? {
         inputTokens: data.usage.prompt_tokens,
         outputTokens: data.usage.completion_tokens,
+        reasoningTokens: data.usage.completion_tokens_details?.reasoning_tokens,
         totalTokens: data.usage.total_tokens,
       }
     : undefined;
 
-  return { text, usage };
+  return { text, thinking, usage };
 }
 
 async function callAnthropic(params: {

@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useState, useRef, useCallback, type ReactNode } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 type Provider = "openai" | "anthropic";
 type ReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh";
@@ -31,6 +33,12 @@ type Message = {
   id: string;
   role: "user" | "assistant";
   content: string;
+  thinking?: string;
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    reasoningTokens?: number;
+  };
   timestamp: Date;
 };
 
@@ -137,8 +145,8 @@ export default function Home() {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [provider, setProvider] = useState<Provider>("openai");
   const [model, setModel] = useState<string>("gpt-5.2-2025-12-11");
-  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("none");
-  const [verbosity, setVerbosity] = useState<Verbosity>("medium");
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("xhigh");
+  const [verbosity, setVerbosity] = useState<Verbosity>("high");
 
   useEffect(() => {
     if (!supabase) return;
@@ -158,37 +166,72 @@ export default function Home() {
     };
   }, [supabase]);
 
-  // Load sessions from localStorage
-  useEffect(() => {
-    const saved = localStorage.getItem("chat-sessions");
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved) as ChatSession[];
-        const restored = parsed.map((s) => ({
-          ...s,
-          createdAt: new Date(s.createdAt),
-          updatedAt: new Date(s.updatedAt),
-          messages: s.messages.map((m) => ({ ...m, timestamp: new Date(m.timestamp) })),
-        }));
-        setSessions(restored);
-        if (restored.length > 0) {
-          setCurrentSessionId(restored[0].id);
-          setProvider(restored[0].provider);
-          setModel(restored[0].model);
-        }
-      } catch { /* ignore */ }
-    }
-  }, []);
+  // Load sessions from DB
+  const loadSessions = useCallback(async () => {
+    if (!accessToken) return;
+    try {
+      const res = await fetch("/api/sessions", {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (!res.ok) return;
+      const json = await res.json();
+      const dbSessions = (json.sessions ?? []).map((s: { id: string; title: string; provider: string; model: string; created_at: string; updated_at: string }) => ({
+        id: s.id,
+        title: s.title,
+        messages: [] as Message[],
+        provider: s.provider as Provider,
+        model: s.model,
+        createdAt: new Date(s.created_at),
+        updatedAt: new Date(s.updated_at),
+      }));
+      setSessions(dbSessions);
+      if (dbSessions.length > 0 && !currentSessionId) {
+        setCurrentSessionId(dbSessions[0].id);
+        setProvider(dbSessions[0].provider);
+        setModel(dbSessions[0].model);
+      }
+    } catch { /* ignore */ }
+  }, [accessToken, currentSessionId]);
 
-  // Save sessions to localStorage
   useEffect(() => {
-    if (sessions.length > 0) {
-      localStorage.setItem("chat-sessions", JSON.stringify(sessions));
+    if (accessToken) {
+      loadSessions();
     }
-  }, [sessions]);
+  }, [accessToken, loadSessions]);
+
+  // Load messages for current session
+  useEffect(() => {
+    if (!accessToken || !currentSessionId) return;
+    
+    const loadMessages = async () => {
+      try {
+        const res = await fetch(`/api/sessions/${currentSessionId}`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        if (!res.ok) return;
+        const json = await res.json();
+        const msgs = (json.messages ?? []).map((m: { id: string; role: string; content: string; thinking?: string; usage_input_tokens?: number; usage_output_tokens?: number; usage_reasoning_tokens?: number; created_at: string }) => ({
+          id: m.id,
+          role: m.role as "user" | "assistant",
+          content: m.content,
+          thinking: m.thinking,
+          usage: m.usage_input_tokens ? {
+            inputTokens: m.usage_input_tokens,
+            outputTokens: m.usage_output_tokens,
+            reasoningTokens: m.usage_reasoning_tokens,
+          } : undefined,
+          timestamp: new Date(m.created_at),
+        }));
+        setSessions((prev) =>
+          prev.map((s) => (s.id === currentSessionId ? { ...s, messages: msgs } : s))
+        );
+      } catch { /* ignore */ }
+    };
+    
+    loadMessages();
+  }, [accessToken, currentSessionId]);
 
   const user = session?.user ?? null;
-  const accessToken = session?.access_token ?? null;
 
   async function signInWithGoogle() {
     if (!supabase) return;
@@ -215,23 +258,47 @@ export default function Home() {
 
   const currentSession = sessions.find((s) => s.id === currentSessionId) ?? null;
 
-  function createNewSession() {
-    const newSession: ChatSession = {
-      id: generateId(),
-      title: "새 대화",
-      messages: [],
-      provider,
-      model,
-      reasoningEffort: provider === "openai" ? reasoningEffort : undefined,
-      verbosity: provider === "openai" ? verbosity : undefined,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-    setSessions((prev) => [newSession, ...prev]);
-    setCurrentSessionId(newSession.id);
+  async function createNewSession(): Promise<string | null> {
+    if (!accessToken) return null;
+    
+    try {
+      const res = await fetch("/api/sessions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ provider, model }),
+      });
+      if (!res.ok) return null;
+      const json = await res.json();
+      const newSession: ChatSession = {
+        id: json.session.id,
+        title: json.session.title,
+        messages: [],
+        provider: json.session.provider as Provider,
+        model: json.session.model,
+        createdAt: new Date(json.session.created_at),
+        updatedAt: new Date(json.session.updated_at),
+      };
+      setSessions((prev) => [newSession, ...prev]);
+      setCurrentSessionId(newSession.id);
+      return newSession.id;
+    } catch {
+      return null;
+    }
   }
 
-  function deleteSession(id: string) {
+  async function deleteSession(id: string) {
+    if (!accessToken) return;
+    
+    try {
+      await fetch(`/api/sessions/${id}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+    } catch { /* ignore */ }
+    
     setSessions((prev) => prev.filter((s) => s.id !== id));
     if (currentSessionId === id) {
       const remaining = sessions.filter((s) => s.id !== id);
@@ -450,8 +517,9 @@ function ChatView(props: {
   setVerbosity: (v: Verbosity) => void;
   authedFetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
   onMessagesChange: (messages: Message[]) => void;
-  onCreateSession: () => void;
+  onCreateSession: () => Promise<string | null>;
 }) {
+  const [thinkingExpanded, setThinkingExpanded] = useState<Record<string, boolean>>({});
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>("");
@@ -474,27 +542,43 @@ function ChatView(props: {
   async function send() {
     if (!input.trim() || loading) return;
 
+    let sessionId = props.session?.id;
+    
     // Create session if none exists
-    if (!props.session) {
-      props.onCreateSession();
-      // Wait a tick for state to update
-      await new Promise((r) => setTimeout(r, 50));
+    if (!sessionId) {
+      sessionId = await props.onCreateSession();
+      if (!sessionId) {
+        setError("Failed to create session");
+        return;
+      }
+      // Wait for state update
+      await new Promise((r) => setTimeout(r, 100));
     }
 
-    const userMessage: Message = {
-      id: generateId(),
-      role: "user",
-      content: input.trim(),
-      timestamp: new Date(),
-    };
-
-    const newMessages = [...messages, userMessage];
-    props.onMessagesChange(newMessages);
+    const userContent = input.trim();
     setInput("");
     setLoading(true);
     setError("");
 
+    // Save user message to DB
     try {
+      const userMsgRes = await props.authedFetch(`/api/sessions/${sessionId}/messages`, {
+        method: "POST",
+        body: JSON.stringify({ role: "user", content: userContent }),
+      });
+      const userMsgJson = await userMsgRes.json();
+      
+      const userMessage: Message = {
+        id: userMsgJson.message?.id ?? generateId(),
+        role: "user",
+        content: userContent,
+        timestamp: new Date(),
+      };
+
+      const newMessages = [...messages, userMessage];
+      props.onMessagesChange(newMessages);
+
+      // Call LLM
       const requestBody: Record<string, unknown> = {
         provider: props.provider,
         model: props.model,
@@ -514,10 +598,27 @@ function ChatView(props: {
       const json = await res.json();
       if (!res.ok) throw new Error(json?.error ?? "Chat failed");
 
+      const result = json.result ?? {};
+      
+      // Save assistant message to DB
+      await props.authedFetch(`/api/sessions/${sessionId}/messages`, {
+        method: "POST",
+        body: JSON.stringify({
+          role: "assistant",
+          content: result.text ?? "",
+          thinking: result.thinking,
+          usage_input_tokens: result.usage?.inputTokens,
+          usage_output_tokens: result.usage?.outputTokens,
+          usage_reasoning_tokens: result.usage?.reasoningTokens,
+        }),
+      });
+
       const assistantMessage: Message = {
         id: generateId(),
         role: "assistant",
-        content: json.result?.text ?? "",
+        content: result.text ?? "",
+        thinking: result.thinking,
+        usage: result.usage,
         timestamp: new Date(),
       };
       props.onMessagesChange([...newMessages, assistantMessage]);
@@ -620,9 +721,44 @@ function ChatView(props: {
             {messages.map((msg, i) => (
               <div
                 key={msg.id}
-                className={`message-enter flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+                className={`message-enter flex flex-col ${msg.role === "user" ? "items-end" : "items-start"}`}
                 style={{ animationDelay: `${i * 50}ms` }}
               >
+                {/* Thinking Section (for assistant messages) */}
+                {msg.role === "assistant" && msg.thinking && (
+                  <div className="mb-2 w-full max-w-[80%]">
+                    <button
+                      onClick={() => setThinkingExpanded((prev) => ({ ...prev, [msg.id]: !prev[msg.id] }))}
+                      className="flex items-center gap-2 text-xs text-[var(--muted)] hover:text-[var(--foreground)] transition"
+                    >
+                      <svg 
+                        xmlns="http://www.w3.org/2000/svg" 
+                        width="14" 
+                        height="14" 
+                        viewBox="0 0 24 24" 
+                        fill="none" 
+                        stroke="currentColor" 
+                        strokeWidth="2"
+                        className={`transition-transform ${thinkingExpanded[msg.id] ? "rotate-90" : ""}`}
+                      >
+                        <polyline points="9 18 15 12 9 6"></polyline>
+                      </svg>
+                      <span className="font-medium">Thinking</span>
+                      {msg.usage?.reasoningTokens && (
+                        <span className="text-[10px] opacity-70">
+                          ({msg.usage.reasoningTokens.toLocaleString()} tokens)
+                        </span>
+                      )}
+                    </button>
+                    {thinkingExpanded[msg.id] && (
+                      <div className="mt-2 rounded-xl border border-[var(--border)] bg-[var(--card)] p-3 text-xs text-[var(--muted)] whitespace-pre-wrap max-h-64 overflow-y-auto">
+                        {msg.thinking}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Message Content */}
                 <div
                   className={`max-w-[80%] rounded-2xl px-4 py-3 ${
                     msg.role === "user"
@@ -630,10 +766,33 @@ function ChatView(props: {
                       : "bg-[var(--ai-bubble)] text-[var(--foreground)]"
                   }`}
                 >
-                  <div className="chat-content text-sm leading-relaxed whitespace-pre-wrap">
-                    {msg.content}
-                  </div>
+                  {msg.role === "user" ? (
+                    <div className="text-sm leading-relaxed whitespace-pre-wrap">
+                      {msg.content}
+                    </div>
+                  ) : (
+                    <div className="prose prose-sm prose-invert max-w-none">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {msg.content}
+                      </ReactMarkdown>
+                    </div>
+                  )}
                 </div>
+
+                {/* Usage Info (for assistant messages) */}
+                {msg.role === "assistant" && msg.usage && (
+                  <div className="mt-1 flex gap-3 text-[10px] text-[var(--muted)]">
+                    {msg.usage.inputTokens !== undefined && (
+                      <span>입력: {msg.usage.inputTokens.toLocaleString()}</span>
+                    )}
+                    {msg.usage.outputTokens !== undefined && (
+                      <span>출력: {msg.usage.outputTokens.toLocaleString()}</span>
+                    )}
+                    {msg.usage.reasoningTokens !== undefined && (
+                      <span>추론: {msg.usage.reasoningTokens.toLocaleString()}</span>
+                    )}
+                  </div>
+                )}
               </div>
             ))}
             {loading && (
