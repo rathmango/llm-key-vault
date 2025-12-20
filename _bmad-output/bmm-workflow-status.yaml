@@ -23,12 +23,12 @@ requirements:
     - "자동 컨텍스트 관리 (80% 임계값 자동 요약)"
     - "채팅 전환시 메모리 클리어"
     - "Compare 기능 제거"
+    - "메시지 페이지네이션 (최근 20개 로드, 스크롤업시 추가)"
+    - "오래된 메시지 접기 (최근 6개만 표시, 펼치기 버튼)"
   pending:
-    - "메시지 페이지네이션 (최근 N개만 로드, 스크롤업시 추가)"
-    - "오래된 메시지 접기 (상단 '더 보기')"
-    - "Message Virtualization (보이는 것만 렌더)"
+    - "Message Virtualization (보이는 것만 렌더) - 선택사항"
 
 workflow_status:
-  tech-spec: in_progress
-  implementation: pending
+  tech-spec: "_bmad-output/tech-spec.md"
+  implementation: completed
 

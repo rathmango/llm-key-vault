@@ -10,11 +10,15 @@ const UpdateSessionSchema = z.object({
 
 type RouteContext = { params: Promise<{ id: string }> };
 
-// GET: Get session with messages
+// GET: Get session with messages (paginated)
+// Query params: limit (default 20), before (message id for cursor pagination)
 export async function GET(request: Request, context: RouteContext) {
   try {
     const user = await requireUser(request);
     const { id } = await context.params;
+    const url = new URL(request.url);
+    const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "20", 10), 100);
+    const before = url.searchParams.get("before"); // message id
     const supabase = getSupabaseAdmin();
 
     // Get session
@@ -29,16 +33,50 @@ export async function GET(request: Request, context: RouteContext) {
       return Response.json({ error: "Session not found" }, { status: 404 });
     }
 
-    // Get messages
-    const { data: messages, error: messagesError } = await supabase
+    // Get total message count
+    const { count: totalCount } = await supabase
+      .from("chat_messages")
+      .select("*", { count: "exact", head: true })
+      .eq("session_id", id);
+
+    // Get messages with pagination
+    let query = supabase
       .from("chat_messages")
       .select("*")
       .eq("session_id", id)
-      .order("created_at", { ascending: true });
+      .order("created_at", { ascending: false })
+      .limit(limit);
+
+    // Cursor pagination: get messages before a specific message
+    if (before) {
+      const { data: cursorMsg } = await supabase
+        .from("chat_messages")
+        .select("created_at")
+        .eq("id", before)
+        .single();
+      
+      if (cursorMsg) {
+        query = query.lt("created_at", cursorMsg.created_at);
+      }
+    }
+
+    const { data: messages, error: messagesError } = await query;
 
     if (messagesError) throw new Error(messagesError.message);
 
-    return Response.json({ session, messages: messages ?? [] });
+    // Reverse to get chronological order
+    const sortedMessages = (messages ?? []).reverse() as Array<{ id: string; [key: string]: unknown }>;
+    const hasMore = (totalCount ?? 0) > (before ? sortedMessages.length : limit);
+
+    return Response.json({ 
+      session, 
+      messages: sortedMessages,
+      pagination: {
+        total: totalCount ?? 0,
+        hasMore,
+        oldestId: sortedMessages[0]?.id ?? null,
+      }
+    });
   } catch (e) {
     if (e instanceof Response) return e;
     const message = e instanceof Error ? e.message : "Unexpected error";
@@ -97,3 +135,4 @@ export async function DELETE(request: Request, context: RouteContext) {
     return Response.json({ error: message }, { status: 500 });
   }
 }
+

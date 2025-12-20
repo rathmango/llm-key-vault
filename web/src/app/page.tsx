@@ -86,6 +86,10 @@ type ChatSession = {
   verbosity?: Verbosity;
   createdAt: Date;
   updatedAt: Date;
+  // Pagination
+  hasMore?: boolean;
+  oldestId?: string | null;
+  isLoadingMore?: boolean;
 };
 
 type KeyItem = {
@@ -252,13 +256,13 @@ export default function Home() {
     loadSessions();
   }, [accessToken]);
 
-  // Load messages for current session
+  // Load messages for current session (paginated - most recent first)
   useEffect(() => {
     if (!accessToken || !currentSessionId) return;
     
     const loadMessages = async () => {
       try {
-        const res = await fetch(`/api/sessions/${currentSessionId}`, {
+        const res = await fetch(`/api/sessions/${currentSessionId}?limit=20`, {
           headers: { Authorization: `Bearer ${accessToken}` },
         });
         if (!res.ok) return;
@@ -277,14 +281,68 @@ export default function Home() {
           } : undefined,
           timestamp: new Date(m.created_at),
         }));
+        const pagination = json.pagination ?? {};
         setSessions((prev) =>
-          prev.map((s) => (s.id === currentSessionId ? { ...s, messages: msgs } : s))
+          prev.map((s) => (s.id === currentSessionId ? { 
+            ...s, 
+            messages: msgs,
+            hasMore: pagination.hasMore ?? false,
+            oldestId: pagination.oldestId ?? null,
+          } : s))
         );
       } catch { /* ignore */ }
     };
     
     loadMessages();
   }, [accessToken, currentSessionId]);
+
+  // Load more messages (older) for current session
+  const loadMoreMessages = useCallback(async () => {
+    if (!accessToken || !currentSessionId) return;
+    
+    const session = sessions.find(s => s.id === currentSessionId);
+    if (!session?.hasMore || !session?.oldestId || session?.isLoadingMore) return;
+    
+    setSessions((prev) =>
+      prev.map((s) => (s.id === currentSessionId ? { ...s, isLoadingMore: true } : s))
+    );
+    
+    try {
+      const res = await fetch(`/api/sessions/${currentSessionId}?limit=20&before=${session.oldestId}`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (!res.ok) return;
+      const json = await res.json();
+      const olderMsgs = (json.messages ?? []).map((m: { id: string; role: string; content: string; images?: string[]; thinking?: string; sources?: unknown; usage_input_tokens?: number; usage_output_tokens?: number; usage_reasoning_tokens?: number; created_at: string }) => ({
+        id: m.id,
+        role: m.role as "user" | "assistant",
+        content: m.content,
+        images: m.images,
+        thinking: m.thinking,
+        sources: normalizeSources(m.sources),
+        usage: m.usage_input_tokens ? {
+          inputTokens: m.usage_input_tokens,
+          outputTokens: m.usage_output_tokens,
+          reasoningTokens: m.usage_reasoning_tokens,
+        } : undefined,
+        timestamp: new Date(m.created_at),
+      }));
+      const pagination = json.pagination ?? {};
+      setSessions((prev) =>
+        prev.map((s) => (s.id === currentSessionId ? { 
+          ...s, 
+          messages: [...olderMsgs, ...s.messages], // Prepend older messages
+          hasMore: pagination.hasMore ?? false,
+          oldestId: pagination.oldestId ?? null,
+          isLoadingMore: false,
+        } : s))
+      );
+    } catch {
+      setSessions((prev) =>
+        prev.map((s) => (s.id === currentSessionId ? { ...s, isLoadingMore: false } : s))
+      );
+    }
+  }, [accessToken, currentSessionId, sessions]);
 
   async function signInWithGoogle() {
     if (!supabase) return;
@@ -560,6 +618,7 @@ export default function Home() {
             }}
             onCreateSession={createNewSession}
             onOpenSidebar={() => setSidebarOpen(true)}
+            onLoadMore={loadMoreMessages}
           />
         )}
         {activeTab === "keys" && <KeysPanel authedFetch={authedFetch} onOpenSidebar={() => setSidebarOpen(true)} />}
@@ -637,6 +696,7 @@ function ChatView(props: {
   onMessagesChange: (messages: Message[]) => void;
   onCreateSession: () => Promise<string | null>;
   onOpenSidebar: () => void;
+  onLoadMore: () => void;
 }) {
   const [thinkingExpanded, setThinkingExpanded] = useState<Record<string, boolean>>({});
   const [input, setInput] = useState("");
@@ -645,9 +705,28 @@ function ChatView(props: {
   const [webSearchEnabled, setWebSearchEnabled] = useState(true);
   const [webSearchMaxResults, setWebSearchMaxResults] = useState(10);
   const [pendingImages, setPendingImages] = useState<string[]>([]);
+  const [collapsedMessages, setCollapsedMessages] = useState(true); // Collapse old messages by default
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  
+  // Scroll handler for loading more messages
+  const handleScroll = useCallback(() => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+    
+    // Load more when scrolled near top (within 100px)
+    if (container.scrollTop < 100 && props.session?.hasMore && !props.session?.isLoadingMore) {
+      const prevScrollHeight = container.scrollHeight;
+      props.onLoadMore();
+      // Restore scroll position after loading (prevents jump)
+      requestAnimationFrame(() => {
+        const newScrollHeight = container.scrollHeight;
+        container.scrollTop = newScrollHeight - prevScrollHeight;
+      });
+    }
+  }, [props]);
 
   // Persist web search settings
   useEffect(() => {
@@ -730,11 +809,20 @@ function ChatView(props: {
     setPendingImages((prev) => prev.filter((_, i) => i !== index));
   };
 
-  const messages = props.session?.messages ?? [];
+  const allMessages = props.session?.messages ?? [];
+  const VISIBLE_COUNT = 6; // Show last 6 messages initially
+  const hasCollapsedMessages = collapsedMessages && allMessages.length > VISIBLE_COUNT;
+  const collapsedCount = hasCollapsedMessages ? allMessages.length - VISIBLE_COUNT : 0;
+  const messages = hasCollapsedMessages ? allMessages.slice(-VISIBLE_COUNT) : allMessages;
+
+  // Reset collapsed state when switching sessions
+  useEffect(() => {
+    setCollapsedMessages(true);
+  }, [props.session?.id]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [allMessages.length]);
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -996,7 +1084,11 @@ function ChatView(props: {
       </header>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-3 py-3 sm:px-6 sm:py-4">
+      <div 
+        ref={messagesContainerRef}
+        onScroll={handleScroll}
+        className="flex-1 overflow-y-auto px-3 py-3 sm:px-6 sm:py-4"
+      >
         {messages.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center text-center animate-fade-in px-4">
             <div className="mx-auto mb-4 flex h-14 w-14 sm:h-16 sm:w-16 items-center justify-center rounded-2xl bg-[var(--accent)]/20">
@@ -1012,6 +1104,35 @@ function ChatView(props: {
           </div>
         ) : (
           <div className="mx-auto max-w-3xl space-y-3 sm:space-y-4">
+            {/* Load more from DB indicator */}
+            {props.session?.hasMore && !hasCollapsedMessages && (
+              <div className="flex justify-center py-2">
+                {props.session?.isLoadingMore ? (
+                  <div className="flex items-center gap-2 text-xs text-[var(--muted)]">
+                    <div className="h-3 w-3 animate-spin rounded-full border-2 border-[var(--accent)] border-t-transparent"></div>
+                    이전 메시지 불러오는 중...
+                  </div>
+                ) : (
+                  <button
+                    onClick={props.onLoadMore}
+                    className="text-xs text-[var(--muted)] hover:text-[var(--foreground)] transition"
+                  >
+                    ↑ 이전 메시지 더 보기
+                  </button>
+                )}
+              </div>
+            )}
+            {/* Show collapsed messages button */}
+            {hasCollapsedMessages && (
+              <div className="flex justify-center py-2">
+                <button
+                  onClick={() => setCollapsedMessages(false)}
+                  className="rounded-full bg-[var(--sidebar-hover)] px-4 py-1.5 text-xs text-[var(--muted)] hover:text-[var(--foreground)] hover:bg-[var(--accent)]/20 transition"
+                >
+                  ↑ 접힌 메시지 {collapsedCount}개 펼치기
+                </button>
+              </div>
+            )}
             {messages.map((msg, i) => (
               <div
                 key={msg.id}
