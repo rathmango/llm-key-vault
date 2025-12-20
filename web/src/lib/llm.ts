@@ -38,6 +38,12 @@ export async function loadUserApiKey(userId: string, provider: Provider) {
 export type ReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh";
 export type Verbosity = "low" | "medium" | "high";
 
+export type WebSearchConfig = {
+  enabled: boolean;
+  toolChoice?: "auto" | "required" | "none";
+  externalWebAccess?: boolean;
+};
+
 function safeEnqueue(controller: ReadableStreamDefaultController<Uint8Array>, chunk: Uint8Array) {
   try {
     controller.enqueue(chunk);
@@ -102,6 +108,7 @@ export async function sendChatStream(params: {
   userId: string;
   reasoningEffort?: ReasoningEffort;
   verbosity?: Verbosity;
+  webSearch?: WebSearchConfig;
 }): Promise<ReadableStream<Uint8Array>> {
   const apiKey = await loadUserApiKey(params.userId, params.provider);
 
@@ -115,6 +122,7 @@ export async function sendChatStream(params: {
         maxTokens: params.maxTokens,
         reasoningEffort: params.reasoningEffort,
         verbosity: params.verbosity,
+        webSearch: params.webSearch,
       });
 
     case "anthropic":
@@ -142,12 +150,24 @@ async function callOpenAIStream(params: {
   maxTokens?: number;
   reasoningEffort?: ReasoningEffort;
   verbosity?: Verbosity;
+  webSearch?: WebSearchConfig;
 }): Promise<ReadableStream<Uint8Array>> {
   const isReasoningModel = params.model.includes("gpt-5") || params.model.includes("o1") || params.model.includes("o3");
+  const webSearchEnabled = params.webSearch?.enabled ?? false;
   
-  // Use Responses API for GPT-5 models, Chat Completions for others
-  if (isReasoningModel) {
-    return callOpenAIResponsesStream(params);
+  // Web search tool is supported in the Responses API (Chat Completions requires specialized search models).
+  // If web search is enabled, always use Responses API.
+  if (isReasoningModel || webSearchEnabled) {
+    return callOpenAIResponsesStream({
+      apiKey: params.apiKey,
+      model: params.model,
+      messages: params.messages,
+      temperature: params.temperature,
+      maxTokens: params.maxTokens,
+      reasoningEffort: params.reasoningEffort,
+      verbosity: params.verbosity,
+      webSearch: params.webSearch,
+    });
   } else {
     return callOpenAIChatCompletionsStream(params);
   }
@@ -162,6 +182,7 @@ async function callOpenAIResponsesStream(params: {
   maxTokens?: number;
   reasoningEffort?: ReasoningEffort;
   verbosity?: Verbosity;
+  webSearch?: WebSearchConfig;
 }): Promise<ReadableStream<Uint8Array>> {
   // Build request body for Responses API
   const body: Record<string, unknown> = {
@@ -169,6 +190,19 @@ async function callOpenAIResponsesStream(params: {
     input: params.messages,
     stream: true,
   };
+
+  const webSearchEnabled = params.webSearch?.enabled ?? false;
+  if (webSearchEnabled) {
+    // OpenAI built-in web search tool (Responses API)
+    // Docs: tools: [{ type: "web_search" }], include: ["web_search_call.action.sources"]
+    const tool: Record<string, unknown> = { type: "web_search" };
+    if (typeof params.webSearch?.externalWebAccess === "boolean") {
+      tool.external_web_access = params.webSearch.externalWebAccess;
+    }
+    body.tools = [tool];
+    body.tool_choice = params.webSearch?.toolChoice ?? "required";
+    body.include = ["web_search_call.action.sources"];
+  }
 
   // Reasoning config
   if (params.reasoningEffort) {
@@ -218,6 +252,21 @@ async function callOpenAIResponsesStream(params: {
 
       let buffer = "";
       let usage = { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 };
+      let sourcesSent = false;
+
+      const maybeEmitSources = (sources: unknown) => {
+        if (sourcesSent) return;
+        if (!Array.isArray(sources)) return;
+        const normalized = sources
+          .map((s) => ({
+            title: typeof (s as { title?: unknown }).title === "string" ? (s as { title: string }).title : "",
+            url: typeof (s as { url?: unknown }).url === "string" ? (s as { url: string }).url : "",
+          }))
+          .filter((s) => s.url.length > 0);
+        if (normalized.length === 0) return;
+        sourcesSent = true;
+        safeEnqueue(controller, encoder.encode(`data: ${JSON.stringify({ type: "sources", sources: normalized })}\n\n`));
+      };
 
       try {
         while (true) {
@@ -244,6 +293,12 @@ async function callOpenAIResponsesStream(params: {
               } else if (event.type === "response.reasoning_summary_text.delta") {
                 // Reasoning summary delta
                 safeEnqueue(controller, encoder.encode(`data: ${JSON.stringify({ type: "thinking", delta: event.delta })}\n\n`));
+              } else if (webSearchEnabled && (event.type === "response.output_item.added" || event.type === "response.output_item.done")) {
+                // Web search call output item
+                const item = event.item;
+                if (item?.type === "web_search_call") {
+                  maybeEmitSources(item?.action?.sources);
+                }
               } else if (event.type === "response.completed") {
                 // Final response with usage
                 if (event.response?.usage) {
@@ -252,6 +307,14 @@ async function callOpenAIResponsesStream(params: {
                     outputTokens: event.response.usage.output_tokens,
                     reasoningTokens: event.response.usage.output_tokens_details?.reasoning_tokens || 0,
                   };
+                }
+                // Fallback: sometimes sources only appear in the final response object
+                if (webSearchEnabled && !sourcesSent) {
+                  const output = event.response?.output;
+                  if (Array.isArray(output)) {
+                    const ws = output.find((o: { type?: unknown }) => (o as { type?: string })?.type === "web_search_call");
+                    maybeEmitSources((ws as { action?: { sources?: unknown } })?.action?.sources);
+                  }
                 }
               }
             } catch {

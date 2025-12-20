@@ -199,7 +199,7 @@ export default function Home() {
   const [provider, setProvider] = useState<Provider>("openai");
   const [model, setModel] = useState<string>("gpt-5.2-2025-12-11");
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("xhigh");
-  const [verbosity, setVerbosity] = useState<Verbosity>("high");
+  const [verbosity, setVerbosity] = useState<Verbosity>("medium");
 
   useEffect(() => {
     if (!supabase) return;

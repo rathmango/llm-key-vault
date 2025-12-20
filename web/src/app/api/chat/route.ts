@@ -120,8 +120,14 @@ export async function POST(request: Request) {
 
     let sourcesForUi: Array<{ title: string; url: string }> | null = null;
     let messages = body.messages;
+    const openAiBuiltinWebSearchEnabled = body.provider === "openai" && body.webSearch?.enabled === true;
 
     if (body.webSearch?.enabled) {
+      // For OpenAI, prefer the built-in `web_search` tool (Responses API).
+      // For Anthropic, fall back to server-side search injection (requires TAVILY_API_KEY).
+      if (openAiBuiltinWebSearchEnabled) {
+        // No server-side search injection; tools are configured in the OpenAI request.
+      } else {
       const query =
         [...body.messages].reverse().find((m) => m.role === "user")?.content?.trim() ||
         body.messages[body.messages.length - 1]?.content?.trim() ||
@@ -136,6 +142,7 @@ export async function POST(request: Request) {
         const rest = body.messages.filter((m) => m.role !== "system");
         messages = [...systemMsgs, systemMsg, ...rest];
       }
+      }
     }
 
     let stream = await sendChatStream({
@@ -147,6 +154,7 @@ export async function POST(request: Request) {
       userId: user.id,
       reasoningEffort: body.reasoningEffort,
       verbosity: body.verbosity,
+      webSearch: openAiBuiltinWebSearchEnabled ? { enabled: true, toolChoice: "required" } : undefined,
     });
 
     stream = wrapSseStream(stream, {
