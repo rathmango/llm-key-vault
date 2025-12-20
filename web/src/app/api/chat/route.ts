@@ -21,7 +21,7 @@ const ContentPartSchema = z.union([
 
 const MessageSchema = z.object({
   role: z.enum(["system", "user", "assistant"]),
-  content: z.union([z.string().min(1), z.array(ContentPartSchema).min(1)]),
+  content: z.union([z.string(), z.array(ContentPartSchema).min(1)]),
 });
 
 const ReasoningEffortSchema = z.enum(["none", "low", "medium", "high", "xhigh"]);
