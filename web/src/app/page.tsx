@@ -268,6 +268,7 @@ function buildYouTubeAnalyzePrompt(url: string, userText: string, ctx?: YouTubeC
     "2) Summarize the video in 8–12 bullet points (Korean).",
     "3) Create a timestamped outline (MM:SS) of key moments. Use transcript timestamps when present. If transcript is missing/truncated, be explicit and avoid inventing precise timestamps—use sections instead.",
     "4) Suggest 5 follow-up questions the user might ask (Korean).",
+    "5) Provide the FULL timestamped transcript under a section titled 'Transcript'. If a transcript is already provided above, copy it verbatim.",
     "",
     isOnlyUrl
       ? "After that, ask: '어떤 관점(요약/비판/투자/실생활)에 집중할까요?'"
@@ -1848,10 +1849,12 @@ function KeysPanel(props: {
   authedFetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
   onOpenSidebar: () => void;
 }) {
-  const [keyInfo, setKeyInfo] = useState<KeyItem | null>(null);
+  const [openaiInfo, setOpenaiInfo] = useState<KeyItem | null>(null);
+  const [geminiInfo, setGeminiInfo] = useState<KeyItem | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>("");
-  const [keyInput, setKeyInput] = useState("");
+  const [openaiInput, setOpenaiInput] = useState("");
+  const [geminiInput, setGeminiInput] = useState("");
 
   async function refresh() {
     setLoading(true);
@@ -1861,7 +1864,9 @@ function KeysPanel(props: {
       const json = await res.json();
       if (!res.ok) throw new Error(json?.error ?? "Failed to load keys");
       const openaiKey = (json.items ?? []).find((x: { provider: string }) => x.provider === "openai");
-      setKeyInfo(openaiKey ? { key_hint: openaiKey.key_hint, updated_at: openaiKey.updated_at } : null);
+      const geminiKey = (json.items ?? []).find((x: { provider: string }) => x.provider === "gemini");
+      setOpenaiInfo(openaiKey ? { key_hint: openaiKey.key_hint, updated_at: openaiKey.updated_at } : null);
+      setGeminiInfo(geminiKey ? { key_hint: geminiKey.key_hint, updated_at: geminiKey.updated_at } : null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Unknown error");
     } finally {
@@ -1874,18 +1879,18 @@ function KeysPanel(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function save() {
+  async function saveOpenAI() {
     setLoading(true);
     setError("");
     try {
-      const apiKey = keyInput.trim();
+      const apiKey = openaiInput.trim();
       const res = await props.authedFetch("/api/keys", {
         method: "POST",
         body: JSON.stringify({ provider: "openai", apiKey }),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json?.error ?? "Failed to save key");
-      setKeyInput("");
+      setOpenaiInput("");
       await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Unknown error");
@@ -1894,11 +1899,48 @@ function KeysPanel(props: {
     }
   }
 
-  async function del() {
+  async function deleteOpenAI() {
     setLoading(true);
     setError("");
     try {
       const res = await props.authedFetch(`/api/keys?provider=openai`, {
+        method: "DELETE",
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.error ?? "Failed to delete key");
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Unknown error");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function saveGemini() {
+    setLoading(true);
+    setError("");
+    try {
+      const apiKey = geminiInput.trim();
+      const res = await props.authedFetch("/api/keys", {
+        method: "POST",
+        body: JSON.stringify({ provider: "gemini", apiKey }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.error ?? "Failed to save key");
+      setGeminiInput("");
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Unknown error");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function deleteGemini() {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await props.authedFetch(`/api/keys?provider=gemini`, {
         method: "DELETE",
       });
       const json = await res.json();
@@ -1927,7 +1969,7 @@ function KeysPanel(props: {
       <div className="flex-1 overflow-y-auto p-4 sm:p-6">
         <div className="mx-auto max-w-2xl space-y-4">
           <div className="animate-fade-in hidden lg:block">
-            <h1 className="text-xl font-semibold">OpenAI API Key</h1>
+            <h1 className="text-xl font-semibold">API Keys</h1>
             <p className="mt-1 text-sm text-[var(--muted)]">
               키는 AES-GCM으로 암호화되어 저장됩니다
             </p>
@@ -1941,21 +1983,21 @@ function KeysPanel(props: {
               <div>
                 <h3 className="font-medium">OpenAI</h3>
                 <p className="text-xs text-[var(--muted)]">
-                  {keyInfo?.key_hint ? `저장됨 (${keyInfo.key_hint})` : "미설정"}
+                  {openaiInfo?.key_hint ? `저장됨 (${openaiInfo.key_hint})` : "미설정"}
                 </p>
               </div>
               <div className="flex gap-2">
                 <button
-                  onClick={del}
+                  onClick={deleteOpenAI}
                   className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-sm transition hover:border-red-500/50 hover:text-red-400 disabled:opacity-50"
                   disabled={loading}
                 >
                   삭제
                 </button>
                 <button
-                  onClick={save}
+                  onClick={saveOpenAI}
                   className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-sm font-medium text-white transition hover:bg-[var(--accent-hover)] disabled:opacity-50"
-                  disabled={loading || keyInput.trim().length < 10}
+                  disabled={loading || openaiInput.trim().length < 10}
                 >
                   저장
                 </button>
@@ -1963,9 +2005,46 @@ function KeysPanel(props: {
             </div>
             <input
               type="password"
-              value={keyInput}
-              onChange={(e) => setKeyInput(e.target.value)}
+              value={openaiInput}
+              onChange={(e) => setOpenaiInput(e.target.value)}
               placeholder="sk-... 형태의 API Key 입력"
+              className="mt-3 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm outline-none transition focus:border-[var(--accent)]"
+            />
+          </div>
+
+          <div className="animate-fade-in rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="font-medium">Gemini</h3>
+                <p className="text-xs text-[var(--muted)]">
+                  {geminiInfo?.key_hint ? `저장됨 (${geminiInfo.key_hint})` : "미설정"}
+                </p>
+                <p className="mt-1 text-[11px] text-[var(--muted)]">
+                  (자막 없는 YouTube 영상도 전문/타임스탬프 생성하기 위한 폴백 전사용)
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={deleteGemini}
+                  className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-sm transition hover:border-red-500/50 hover:text-red-400 disabled:opacity-50"
+                  disabled={loading}
+                >
+                  삭제
+                </button>
+                <button
+                  onClick={saveGemini}
+                  className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-sm font-medium text-white transition hover:bg-[var(--accent-hover)] disabled:opacity-50"
+                  disabled={loading || geminiInput.trim().length < 10}
+                >
+                  저장
+                </button>
+              </div>
+            </div>
+            <input
+              type="password"
+              value={geminiInput}
+              onChange={(e) => setGeminiInput(e.target.value)}
+              placeholder="Google AI Studio에서 발급한 API Key (예: AIza...)"
               className="mt-3 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm outline-none transition focus:border-[var(--accent)]"
             />
           </div>
