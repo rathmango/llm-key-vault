@@ -12,6 +12,7 @@ const BodySchema = z.object({
   url: z.string().url(),
   lang: z.string().optional(), // "ko" | "en" etc
   model: z.string().optional(), // gemini model id
+  assistantMessageId: z.string().uuid().optional(),
 });
 
 type YouTubeVideo = {
@@ -227,6 +228,31 @@ export async function POST(request: Request) {
         return;
       }
 
+      const assistantMessageId = body.assistantMessageId ?? null;
+      const updateAssistant = async (content: string) => {
+        if (!assistantMessageId) return;
+        try {
+          await supabase
+            .from("chat_messages")
+            .upsert(
+              {
+                id: assistantMessageId,
+                session_id: body.sessionId,
+                role: "assistant",
+                content,
+              },
+              { onConflict: "id" }
+            );
+          // Touch session updated_at (so sidebar ordering reflects progress)
+          await supabase
+            .from("chat_sessions")
+            .update({ updated_at: new Date().toISOString() })
+            .eq("id", body.sessionId);
+        } catch {
+          // ignore DB failures (streaming still works)
+        }
+      };
+
       const ytKey = getYouTubeApiKey();
       if (!ytKey) {
         await sendError("Missing YOUTUBE_DATA_API_KEY");
@@ -244,6 +270,7 @@ export async function POST(request: Request) {
 
       // Step 1: Fetch metadata
       await send("progress", { step: 1, total: 4, message: "🔍 영상 정보 가져오는 중…" });
+      await updateAssistant("🔍 영상 정보 가져오는 중…");
       const video = await fetchVideoMeta(ytKey, videoId);
 
       // Send video metadata early so UI can show title
@@ -251,6 +278,7 @@ export async function POST(request: Request) {
 
       // Step 2: Starting Gemini analysis
       await send("progress", { step: 2, total: 4, message: "🤖 Gemini로 영상 분석 중… (30초~2분 소요)" });
+      await updateAssistant(`## 📺 ${video.title ?? "YouTube 영상"}\n\n●●○○ (2/4)\n\n🤖 Gemini로 영상 분석 중… (30초~2분 소요)`);
 
       const prompt = [
         "You are an expert YouTube video analyzer and transcription engine.",
@@ -289,6 +317,7 @@ export async function POST(request: Request) {
 
       // Step 3: Parsing results
       await send("progress", { step: 3, total: 4, message: "📝 결과 정리 중…" });
+      await updateAssistant(`## 📺 ${video.title ?? "YouTube 영상"}\n\n●●●○ (3/4)\n\n📝 결과 정리 중…`);
 
       const summaryMd = takeSection(combined, "SUMMARY");
       const outlineMd = takeSection(combined, "OUTLINE");
@@ -298,6 +327,7 @@ export async function POST(request: Request) {
 
       // Step 4: Saving to DB
       await send("progress", { step: 4, total: 4, message: "💾 DB에 저장 중…" });
+      await updateAssistant(`## 📺 ${video.title ?? "YouTube 영상"}\n\n●●●● (4/4)\n\n💾 DB에 저장 중…`);
 
       const { data: ctx, error: upsertError } = await supabase
         .from("video_contexts")
@@ -334,6 +364,8 @@ export async function POST(request: Request) {
         transcriptSource: "gemini",
         transcriptTruncated: transcriptSanitized.isTruncated,
       });
+
+      await updateAssistant(assistantMarkdown);
 
       // Final result
       await send("complete", {

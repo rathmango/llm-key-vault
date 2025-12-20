@@ -278,6 +278,15 @@ function buildYouTubeAnalyzePrompt(url: string, userText: string, ctx?: YouTubeC
 }
 
 function generateId(): string {
+  // Prefer UUID so IDs can safely be used as DB primary keys when needed.
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      return crypto.randomUUID();
+    }
+  } catch {
+    // ignore
+  }
   return Math.random().toString(36).substring(2) + Date.now().toString(36);
 }
 
@@ -1314,7 +1323,7 @@ function ChatView(props: {
         // YouTube ingestion pipeline with SSE progress updates
         const ingestRes = await props.authedFetch("/api/youtube/ingest", {
           method: "POST",
-          body: JSON.stringify({ sessionId: sessionIdFinal, url: youtubeUrl, lang: "ko" }),
+          body: JSON.stringify({ sessionId: sessionIdFinal, url: youtubeUrl, lang: "ko", assistantMessageId: assistantId }),
         });
 
         if (!ingestRes.ok) {
@@ -1378,15 +1387,6 @@ function ChatView(props: {
           }
         }
 
-        // Persist final assistant message
-        await props.authedFetch(`/api/sessions/${sessionId}/messages`, {
-          method: "POST",
-          body: JSON.stringify({
-            role: "assistant",
-            content: finalMarkdown || "YouTube 컨텍스트 저장 완료",
-          }),
-        });
-
         // Update UI with final result
         props.onMessagesChange(sessionIdFinal, [
           ...newMessages,
@@ -1418,6 +1418,7 @@ function ChatView(props: {
         reasoningEffort: props.reasoningEffort,
         verbosity: props.verbosity,
         sessionId: sessionIdFinal,
+        assistantMessageId: assistantId,
       };
 
       // Web search: auto-detect if query needs real-time info, or use manual toggle
@@ -1513,20 +1514,6 @@ function ChatView(props: {
         }
       }
       
-      // Save final assistant message to DB
-      await props.authedFetch(`/api/sessions/${sessionId}/messages`, {
-        method: "POST",
-        body: JSON.stringify({
-          role: "assistant",
-          content: assistantContent,
-          thinking: assistantThinking || undefined,
-          sources: assistantSources,
-          usage_input_tokens: assistantUsage?.inputTokens,
-          usage_output_tokens: assistantUsage?.outputTokens,
-          usage_reasoning_tokens: assistantUsage?.reasoningTokens,
-        }),
-      });
-
       // Final update with usage
       props.onMessagesChange(sessionIdFinal, [
         ...newMessages,

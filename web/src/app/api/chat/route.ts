@@ -39,6 +39,7 @@ const BodySchema = z.object({
   model: z.string().min(1),
   messages: z.array(MessageSchema).min(1),
   sessionId: z.string().min(1).optional(),
+  assistantMessageId: z.string().uuid().optional(),
   temperature: z.number().min(0).max(2).optional(),
   maxTokens: z.number().int().min(1).max(32000).optional(),
   reasoningEffort: ReasoningEffortSchema.optional(),
@@ -262,6 +263,41 @@ export async function POST(request: Request) {
     const body = BodySchema.parse(await request.json());
 
     const webSearchEnabled = body.webSearch?.enabled === true;
+
+    const supabase = getSupabaseAdmin();
+    const sessionId = body.sessionId ?? null;
+    const assistantMessageId = body.assistantMessageId ?? null;
+
+    // Best-effort: create/attach assistant message row up front so results persist
+    if (sessionId && assistantMessageId) {
+      try {
+        const { data: session } = await supabase
+          .from("chat_sessions")
+          .select("id")
+          .eq("id", sessionId)
+          .eq("user_id", user.id)
+          .single();
+        if (session) {
+          await supabase
+            .from("chat_messages")
+            .upsert(
+              {
+                id: assistantMessageId,
+                session_id: sessionId,
+                role: "assistant",
+                content: "",
+              },
+              { onConflict: "id" }
+            );
+          await supabase
+            .from("chat_sessions")
+            .update({ updated_at: new Date().toISOString() })
+            .eq("id", sessionId);
+        }
+      } catch {
+        // ignore
+      }
+    }
     
     // Attach stored video transcript context (if available) WITHOUT printing it.
     // This enables Lilys-style “always transcript” behind the scenes.
@@ -346,7 +382,7 @@ export async function POST(request: Request) {
       }
     }
 
-    let stream = await sendChatStream({
+    const upstream = await sendChatStream({
       model: body.model,
       messages,
       temperature: body.temperature,
@@ -358,8 +394,136 @@ export async function POST(request: Request) {
       webSearch: webSearchEnabled ? { enabled: true, toolChoice: "auto" } : undefined,
     });
 
-    stream = wrapSseStream(stream, {
-      heartbeatIntervalMs: 15_000,
+    // Wrap stream:
+    // - add keep-alives
+    // - persist assistant output to DB even if client navigates away
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+    let clientClosed = false;
+    let assistantText = "";
+    let assistantThinking = "";
+    let assistantSources: unknown | null = null;
+    let assistantUsage:
+      | { inputTokens?: number; outputTokens?: number; reasoningTokens?: number }
+      | null = null;
+    let lastPersistAt = 0;
+
+    const persist = async (force: boolean = false) => {
+      if (!sessionId || !assistantMessageId) return;
+      const now = Date.now();
+      if (!force && now - lastPersistAt < 1200) return;
+      lastPersistAt = now;
+      try {
+        await supabase
+          .from("chat_messages")
+          .update({
+            content: assistantText,
+            thinking: assistantThinking || null,
+            sources: assistantSources,
+            usage_input_tokens: assistantUsage?.inputTokens ?? null,
+            usage_output_tokens: assistantUsage?.outputTokens ?? null,
+            usage_reasoning_tokens: assistantUsage?.reasoningTokens ?? null,
+          })
+          .eq("id", assistantMessageId)
+          .eq("session_id", sessionId);
+        await supabase
+          .from("chat_sessions")
+          .update({ updated_at: new Date().toISOString() })
+          .eq("id", sessionId);
+      } catch {
+        // ignore persistence failures
+      }
+    };
+
+    const stream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        const safeEnqueue = (text: string) => {
+          if (clientClosed) return;
+          try {
+            controller.enqueue(encoder.encode(text));
+          } catch {
+            clientClosed = true;
+          }
+        };
+
+        // Flush early
+        safeEnqueue(": stream-start\n\n");
+
+        const heartbeat = setInterval(() => {
+          safeEnqueue(": keep-alive\n\n");
+        }, 15_000);
+
+        const reader = upstream.getReader();
+        let buffer = "";
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            if (value) {
+              // Forward as-is (already in SSE format)
+              if (!clientClosed) {
+                try {
+                  controller.enqueue(value);
+                } catch {
+                  clientClosed = true;
+                }
+              }
+
+              // Parse events for persistence
+              buffer += decoder.decode(value, { stream: true });
+              const lines = buffer.split("\n");
+              buffer = lines.pop() || "";
+              for (const line of lines) {
+                const normalized = line.endsWith("\r") ? line.slice(0, -1) : line;
+                if (!normalized.startsWith("data: ")) continue;
+                const data = normalized.slice(6);
+                if (!data || data === "[DONE]") continue;
+                try {
+                  const ev = JSON.parse(data) as { type?: string; delta?: string; sources?: unknown; usage?: unknown; error?: unknown };
+                  if (ev.type === "text" && typeof ev.delta === "string") {
+                    assistantText += ev.delta;
+                    await persist(false);
+                  } else if (ev.type === "thinking" && typeof ev.delta === "string") {
+                    assistantThinking += ev.delta;
+                    await persist(false);
+                  } else if (ev.type === "sources") {
+                    assistantSources = (ev as { sources?: unknown }).sources ?? null;
+                    await persist(false);
+                  } else if (ev.type === "usage") {
+                    assistantUsage = (ev as { usage?: { inputTokens?: number; outputTokens?: number; reasoningTokens?: number } }).usage ?? null;
+                    await persist(false);
+                  } else if (ev.type === "error") {
+                    // Persist whatever we have (best-effort)
+                    await persist(true);
+                  }
+                } catch {
+                  // ignore
+                }
+              }
+            }
+          }
+
+          // Final persist
+          await persist(true);
+        } finally {
+          clearInterval(heartbeat);
+          try {
+            reader.releaseLock();
+          } catch {
+            // ignore
+          }
+          try {
+            controller.close();
+          } catch {
+            // ignore
+          }
+        }
+      },
+      async cancel() {
+        // If client disconnects, we keep consuming upstream to persist to DB (best-effort).
+        clientClosed = true;
+      },
     });
 
     return new Response(stream, {
