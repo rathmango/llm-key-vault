@@ -11,6 +11,14 @@ const AddMessageSchema = z.object({
   usage_input_tokens: z.number().optional(),
   usage_output_tokens: z.number().optional(),
   usage_reasoning_tokens: z.number().optional(),
+  sources: z
+    .array(
+      z.object({
+        title: z.string().min(1),
+        url: z.string().url(),
+      })
+    )
+    .optional(),
 });
 
 type RouteContext = { params: Promise<{ id: string }> };
@@ -46,6 +54,7 @@ export async function POST(request: Request, context: RouteContext) {
         usage_input_tokens: body.usage_input_tokens,
         usage_output_tokens: body.usage_output_tokens,
         usage_reasoning_tokens: body.usage_reasoning_tokens,
+        sources: body.sources,
       })
       .select()
       .single();
@@ -85,3 +94,4 @@ export async function POST(request: Request, context: RouteContext) {
     return Response.json({ error: message }, { status: 500 });
   }
 }
+

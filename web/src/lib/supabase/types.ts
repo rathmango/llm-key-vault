@@ -66,6 +66,7 @@ export type Database = {
           role: string;
           content: string;
           thinking: string | null;
+          sources: unknown | null;
           usage_input_tokens: number | null;
           usage_output_tokens: number | null;
           usage_reasoning_tokens: number | null;
@@ -77,6 +78,7 @@ export type Database = {
           role: string;
           content: string;
           thinking?: string | null;
+          sources?: unknown | null;
           usage_input_tokens?: number | null;
           usage_output_tokens?: number | null;
           usage_reasoning_tokens?: number | null;
@@ -84,6 +86,7 @@ export type Database = {
         Update: {
           content?: string;
           thinking?: string | null;
+          sources?: unknown | null;
         };
         Relationships: [];
       };
@@ -94,3 +97,4 @@ export type Database = {
     CompositeTypes: Record<string, never>;
   };
 };
+

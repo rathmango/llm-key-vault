@@ -38,6 +38,19 @@ export async function loadUserApiKey(userId: string, provider: Provider) {
 export type ReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh";
 export type Verbosity = "low" | "medium" | "high";
 
+function safeEnqueue(controller: ReadableStreamDefaultController<Uint8Array>, chunk: Uint8Array) {
+  try {
+    controller.enqueue(chunk);
+  } catch {
+    // ignore enqueue errors (e.g. if consumer disconnected)
+  }
+}
+
+function normalizeSseLine(line: string): string {
+  // Some providers use CRLF; keep parsing consistent.
+  return line.endsWith("\r") ? line.slice(0, -1) : line;
+}
+
 // Non-streaming version (for compare endpoint)
 export async function sendChat(params: {
   provider: Provider;
@@ -216,8 +229,9 @@ async function callOpenAIResponsesStream(params: {
           buffer = lines.pop() || "";
 
           for (const line of lines) {
-            if (!line.startsWith("data: ")) continue;
-            const data = line.slice(6);
+            const normalized = normalizeSseLine(line);
+            if (!normalized.startsWith("data: ")) continue;
+            const data = normalized.slice(6);
             if (data === "[DONE]") continue;
 
             try {
@@ -226,10 +240,10 @@ async function callOpenAIResponsesStream(params: {
               // Handle different event types
               if (event.type === "response.output_text.delta") {
                 // Text delta
-                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "text", delta: event.delta })}\n\n`));
+                safeEnqueue(controller, encoder.encode(`data: ${JSON.stringify({ type: "text", delta: event.delta })}\n\n`));
               } else if (event.type === "response.reasoning_summary_text.delta") {
                 // Reasoning summary delta
-                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "thinking", delta: event.delta })}\n\n`));
+                safeEnqueue(controller, encoder.encode(`data: ${JSON.stringify({ type: "thinking", delta: event.delta })}\n\n`));
               } else if (event.type === "response.completed") {
                 // Final response with usage
                 if (event.response?.usage) {
@@ -247,8 +261,13 @@ async function callOpenAIResponsesStream(params: {
         }
 
         // Send final usage
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "usage", usage })}\n\n`));
-        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        safeEnqueue(controller, encoder.encode(`data: ${JSON.stringify({ type: "usage", usage })}\n\n`));
+        safeEnqueue(controller, encoder.encode("data: [DONE]\n\n"));
+      } catch (e) {
+        const message = e instanceof Error ? e.message : "OpenAI stream failed";
+        safeEnqueue(controller, encoder.encode(`data: ${JSON.stringify({ type: "error", error: message })}\n\n`));
+        safeEnqueue(controller, encoder.encode(`data: ${JSON.stringify({ type: "usage", usage })}\n\n`));
+        safeEnqueue(controller, encoder.encode("data: [DONE]\n\n"));
       } finally {
         controller.close();
         reader.releaseLock();
@@ -319,10 +338,11 @@ async function callOpenAIChatCompletionsStream(params: {
           buffer = lines.pop() || "";
 
           for (const line of lines) {
-            if (!line.startsWith("data: ")) continue;
-            const data = line.slice(6);
+            const normalized = normalizeSseLine(line);
+            if (!normalized.startsWith("data: ")) continue;
+            const data = normalized.slice(6);
             if (data === "[DONE]") {
-              controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+              safeEnqueue(controller, encoder.encode("data: [DONE]\n\n"));
               continue;
             }
 
@@ -330,12 +350,12 @@ async function callOpenAIChatCompletionsStream(params: {
               const event = JSON.parse(data);
               const delta = event.choices?.[0]?.delta?.content;
               if (delta) {
-                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "text", delta })}\n\n`));
+                safeEnqueue(controller, encoder.encode(`data: ${JSON.stringify({ type: "text", delta })}\n\n`));
               }
               
               // Usage in final chunk
               if (event.usage) {
-                controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+                safeEnqueue(controller, encoder.encode(`data: ${JSON.stringify({
                   type: "usage",
                   usage: {
                     inputTokens: event.usage.prompt_tokens,
@@ -349,6 +369,10 @@ async function callOpenAIChatCompletionsStream(params: {
             }
           }
         }
+      } catch (e) {
+        const message = e instanceof Error ? e.message : "OpenAI stream failed";
+        safeEnqueue(controller, encoder.encode(`data: ${JSON.stringify({ type: "error", error: message })}\n\n`));
+        safeEnqueue(controller, encoder.encode("data: [DONE]\n\n"));
       } finally {
         controller.close();
         reader.releaseLock();
@@ -430,8 +454,9 @@ async function callAnthropicStream(params: {
           buffer = lines.pop() || "";
 
           for (const line of lines) {
-            if (!line.startsWith("data: ")) continue;
-            const data = line.slice(6);
+            const normalized = normalizeSseLine(line);
+            if (!normalized.startsWith("data: ")) continue;
+            const data = normalized.slice(6);
 
             try {
               const event = JSON.parse(data);
@@ -439,10 +464,10 @@ async function callAnthropicStream(params: {
               // Text delta
               if (event.type === "content_block_delta") {
                 if (event.delta?.type === "text_delta") {
-                  controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "text", delta: event.delta.text })}\n\n`));
+                  safeEnqueue(controller, encoder.encode(`data: ${JSON.stringify({ type: "text", delta: event.delta.text })}\n\n`));
                 } else if (event.delta?.type === "thinking_delta") {
                   // Extended thinking delta
-                  controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "thinking", delta: event.delta.thinking })}\n\n`));
+                  safeEnqueue(controller, encoder.encode(`data: ${JSON.stringify({ type: "thinking", delta: event.delta.thinking })}\n\n`));
                 }
               }
               
@@ -460,8 +485,13 @@ async function callAnthropicStream(params: {
         }
 
         // Send final usage
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "usage", usage })}\n\n`));
-        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        safeEnqueue(controller, encoder.encode(`data: ${JSON.stringify({ type: "usage", usage })}\n\n`));
+        safeEnqueue(controller, encoder.encode("data: [DONE]\n\n"));
+      } catch (e) {
+        const message = e instanceof Error ? e.message : "Anthropic stream failed";
+        safeEnqueue(controller, encoder.encode(`data: ${JSON.stringify({ type: "error", error: message })}\n\n`));
+        safeEnqueue(controller, encoder.encode(`data: ${JSON.stringify({ type: "usage", usage })}\n\n`));
+        safeEnqueue(controller, encoder.encode("data: [DONE]\n\n"));
       } finally {
         controller.close();
         reader.releaseLock();
@@ -589,3 +619,4 @@ async function callAnthropicNonStream(params: {
     } : undefined,
   };
 }
+

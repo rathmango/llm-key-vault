@@ -1,6 +1,28 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+## LLM Key Vault (Web)
+
+내 API Key(OpenAI/Anthropic)를 Supabase에 **암호화 저장**하고, 웹에서 채팅/비교를 할 수 있는 Next.js 앱입니다.
+
+추가 기능:
+- **Web 검색**: 채팅 상단의 **“Web 검색”** 토글을 켜면, 서버가 먼저 웹 검색(Tavily) 결과를 가져와 모델에게 컨텍스트로 제공하고 **Sources(출처)** 를 함께 표시합니다.
 
 ## Getting Started
+
+### 환경 변수
+
+`env.sample`을 참고해서 환경 변수를 설정하세요.
+
+로컬 개발에서는 보통 `web/.env.local`(gitignore됨)에 넣습니다.
+
+필수:
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `LLMKV_ENCRYPTION_KEY`
+
+Web 검색(선택):
+- `TAVILY_API_KEY`
+
+### 개발 서버 실행
 
 First, run the development server:
 

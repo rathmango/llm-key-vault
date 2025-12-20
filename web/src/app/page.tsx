@@ -47,11 +47,30 @@ function normalizeLatex(text: string): string {
     .replace(/\*\*([^*]+)\*\*/g, '**$1**');
 }
 
+type Source = {
+  title: string;
+  url: string;
+};
+
+function normalizeSources(value: unknown): Source[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: Source[] = [];
+  for (const item of value) {
+    const title = (item as { title?: unknown })?.title;
+    const url = (item as { url?: unknown })?.url;
+    if (typeof title === "string" && typeof url === "string") {
+      out.push({ title, url });
+    }
+  }
+  return out.length ? out : undefined;
+}
+
 type Message = {
   id: string;
   role: "user" | "assistant";
   content: string;
   thinking?: string;
+  sources?: Source[];
   usage?: {
     inputTokens?: number;
     outputTokens?: number;
@@ -252,11 +271,12 @@ export default function Home() {
         });
         if (!res.ok) return;
         const json = await res.json();
-        const msgs = (json.messages ?? []).map((m: { id: string; role: string; content: string; thinking?: string; usage_input_tokens?: number; usage_output_tokens?: number; usage_reasoning_tokens?: number; created_at: string }) => ({
+        const msgs = (json.messages ?? []).map((m: { id: string; role: string; content: string; thinking?: string; sources?: unknown; usage_input_tokens?: number; usage_output_tokens?: number; usage_reasoning_tokens?: number; created_at: string }) => ({
           id: m.id,
           role: m.role as "user" | "assistant",
           content: m.content,
           thinking: m.thinking,
+          sources: normalizeSources(m.sources),
           usage: m.usage_input_tokens ? {
             inputTokens: m.usage_input_tokens,
             outputTokens: m.usage_output_tokens,
@@ -602,6 +622,8 @@ function ChatView(props: {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>("");
+  const [webSearchEnabled, setWebSearchEnabled] = useState(false);
+  const [webSearchMaxResults, setWebSearchMaxResults] = useState(5);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -662,6 +684,7 @@ function ChatView(props: {
       let assistantContent = "";
       let assistantThinking = "";
       let assistantUsage: Message["usage"] = undefined;
+      let assistantSources: Source[] | undefined = undefined;
 
       const assistantMessage: Message = {
         id: assistantId,
@@ -682,6 +705,10 @@ function ChatView(props: {
       if (props.provider === "openai") {
         requestBody.reasoningEffort = props.reasoningEffort;
         requestBody.verbosity = props.verbosity;
+      }
+
+      if (webSearchEnabled) {
+        requestBody.webSearch = { enabled: true, maxResults: webSearchMaxResults };
       }
       
       const res = await props.authedFetch("/api/chat", {
@@ -721,14 +748,23 @@ function ChatView(props: {
               assistantContent += event.delta;
               props.onMessagesChange([
                 ...newMessages,
-                { ...assistantMessage, content: assistantContent, thinking: assistantThinking || undefined },
+                { ...assistantMessage, content: assistantContent, thinking: assistantThinking || undefined, sources: assistantSources },
               ]);
             } else if (event.type === "thinking") {
               assistantThinking += event.delta;
               props.onMessagesChange([
                 ...newMessages,
-                { ...assistantMessage, content: assistantContent, thinking: assistantThinking },
+                { ...assistantMessage, content: assistantContent, thinking: assistantThinking, sources: assistantSources },
               ]);
+            } else if (event.type === "sources") {
+              assistantSources = normalizeSources(event.sources);
+              props.onMessagesChange([
+                ...newMessages,
+                { ...assistantMessage, content: assistantContent, thinking: assistantThinking || undefined, sources: assistantSources },
+              ]);
+            } else if (event.type === "error") {
+              try { await reader.cancel(); } catch { /* ignore */ }
+              throw new Error(typeof event.error === "string" ? event.error : "Stream failed");
             } else if (event.type === "usage") {
               assistantUsage = event.usage;
             }
@@ -745,6 +781,7 @@ function ChatView(props: {
           role: "assistant",
           content: assistantContent,
           thinking: assistantThinking || undefined,
+          sources: assistantSources,
           usage_input_tokens: assistantUsage?.inputTokens,
           usage_output_tokens: assistantUsage?.outputTokens,
           usage_reasoning_tokens: assistantUsage?.reasoningTokens,
@@ -758,6 +795,7 @@ function ChatView(props: {
           ...assistantMessage,
           content: assistantContent,
           thinking: assistantThinking || undefined,
+          sources: assistantSources,
           usage: assistantUsage,
         },
       ]);
@@ -844,6 +882,33 @@ function ChatView(props: {
               </div>
             </div>
           )}
+
+          {/* Web search toggle */}
+          <div className="flex items-center gap-2">
+            <label className="flex items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--card)] px-2 py-2 text-xs text-[var(--muted)] transition hover:border-[var(--border-hover)] sm:px-3 sm:py-1.5">
+              <input
+                type="checkbox"
+                checked={webSearchEnabled}
+                onChange={(e) => setWebSearchEnabled(e.target.checked)}
+                className="accent-[var(--accent)]"
+              />
+              Web 검색
+            </label>
+            {webSearchEnabled && (
+              <select
+                value={webSearchMaxResults}
+                onChange={(e) => setWebSearchMaxResults(Number(e.target.value))}
+                className="rounded-lg border border-[var(--border)] bg-[var(--card)] px-2 py-2 text-xs outline-none transition hover:border-[var(--border-hover)] sm:px-3 sm:py-1.5"
+                title="검색 결과 개수"
+              >
+                {[3, 5, 7, 10].map((n) => (
+                  <option key={n} value={n}>
+                    {n}개
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
         </div>
         <div className="hidden text-xs text-[var(--muted)] sm:block">
           shift + return으로 줄바꿈
@@ -929,6 +994,26 @@ function ChatView(props: {
                 </div>
 
                 {/* Usage Info (for assistant messages) */}
+                {msg.role === "assistant" && msg.sources && msg.sources.length > 0 && (
+                  <div className="mt-2 w-full max-w-[80%]">
+                    <div className="text-xs font-medium text-[var(--muted)]">Sources</div>
+                    <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-[var(--muted)]">
+                      {msg.sources.map((s, idx) => (
+                        <li key={`${msg.id}:src:${idx}`} className="truncate">
+                          <a
+                            href={s.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="underline underline-offset-2 hover:text-[var(--foreground)]"
+                          >
+                            {s.title || s.url}
+                          </a>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
                 {msg.role === "assistant" && msg.usage && (
                   <div className="mt-1 flex gap-3 text-[10px] text-[var(--muted)]">
                     {msg.usage.inputTokens !== undefined && (
