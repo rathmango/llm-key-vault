@@ -122,6 +122,9 @@ async function callOpenAI(params: {
   });
 
   const data = await res.json().catch(() => null);
+  
+  // Debug log
+  console.log("OpenAI response:", JSON.stringify(data, null, 2));
 
   if (!res.ok) {
     const message =
@@ -135,10 +138,14 @@ async function callOpenAI(params: {
   const text: string = choice?.message?.content ?? "";
   
   // GPT-5.2 returns reasoning summary in message.reasoning or message.reasoning_content
+  // Also check for reasoning_summary which some models use
   const thinking: string | undefined = 
     choice?.message?.reasoning_content ?? 
     choice?.message?.reasoning ?? 
+    choice?.message?.reasoning_summary ??
     undefined;
+  
+  console.log("Parsed thinking:", thinking);
 
   const usage = data?.usage
     ? {

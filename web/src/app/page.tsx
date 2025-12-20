@@ -170,37 +170,42 @@ export default function Home() {
   const accessToken = session?.access_token ?? null;
 
   // Load sessions from DB
-  const loadSessions = useCallback(async () => {
-    if (!accessToken) return;
-    try {
-      const res = await fetch("/api/sessions", {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      if (!res.ok) return;
-      const json = await res.json();
-      const dbSessions = (json.sessions ?? []).map((s: { id: string; title: string; provider: string; model: string; created_at: string; updated_at: string }) => ({
-        id: s.id,
-        title: s.title,
-        messages: [] as Message[],
-        provider: s.provider as Provider,
-        model: s.model,
-        createdAt: new Date(s.created_at),
-        updatedAt: new Date(s.updated_at),
-      }));
-      setSessions(dbSessions);
-      if (dbSessions.length > 0 && !currentSessionId) {
-        setCurrentSessionId(dbSessions[0].id);
-        setProvider(dbSessions[0].provider);
-        setModel(dbSessions[0].model);
-      }
-    } catch { /* ignore */ }
-  }, [accessToken, currentSessionId]);
-
   useEffect(() => {
-    if (accessToken) {
-      loadSessions();
-    }
-  }, [accessToken, loadSessions]);
+    if (!accessToken) return;
+    
+    const loadSessions = async () => {
+      try {
+        const res = await fetch("/api/sessions", {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        if (!res.ok) {
+          console.error("Failed to load sessions:", res.status);
+          return;
+        }
+        const json = await res.json();
+        console.log("Loaded sessions:", json);
+        const dbSessions = (json.sessions ?? []).map((s: { id: string; title: string; provider: string; model: string; created_at: string; updated_at: string }) => ({
+          id: s.id,
+          title: s.title,
+          messages: [] as Message[],
+          provider: s.provider as Provider,
+          model: s.model,
+          createdAt: new Date(s.created_at),
+          updatedAt: new Date(s.updated_at),
+        }));
+        setSessions(dbSessions);
+        if (dbSessions.length > 0) {
+          setCurrentSessionId((prev) => prev ?? dbSessions[0].id);
+          setProvider(dbSessions[0].provider);
+          setModel(dbSessions[0].model);
+        }
+      } catch (e) {
+        console.error("Error loading sessions:", e);
+      }
+    };
+    
+    loadSessions();
+  }, [accessToken]);
 
   // Load messages for current session
   useEffect(() => {
