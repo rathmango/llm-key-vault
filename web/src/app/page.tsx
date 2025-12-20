@@ -622,10 +622,42 @@ function ChatView(props: {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>("");
-  const [webSearchEnabled, setWebSearchEnabled] = useState(false);
+  const [webSearchEnabled, setWebSearchEnabled] = useState(true);
   const [webSearchMaxResults, setWebSearchMaxResults] = useState(5);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Persist web search settings
+  useEffect(() => {
+    try {
+      const savedEnabled = localStorage.getItem("llmkv:webSearchEnabled");
+      if (savedEnabled === "0") setWebSearchEnabled(false);
+      if (savedEnabled === "1") setWebSearchEnabled(true);
+
+      const savedMax = localStorage.getItem("llmkv:webSearchMaxResults");
+      const n = savedMax ? Number(savedMax) : NaN;
+      if ([3, 5, 7, 10].includes(n)) setWebSearchMaxResults(n);
+    } catch {
+      // ignore
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("llmkv:webSearchEnabled", webSearchEnabled ? "1" : "0");
+    } catch {
+      // ignore
+    }
+  }, [webSearchEnabled]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("llmkv:webSearchMaxResults", String(webSearchMaxResults));
+    } catch {
+      // ignore
+    }
+  }, [webSearchMaxResults]);
 
   const messages = props.session?.messages ?? [];
 

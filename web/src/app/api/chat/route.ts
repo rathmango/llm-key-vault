@@ -134,13 +134,18 @@ export async function POST(request: Request) {
         "";
 
       if (query) {
-        const sources = await searchWeb(query, { maxResults: body.webSearch.maxResults ?? 5 });
-        sourcesForUi = sources.map((s) => ({ title: s.title, url: s.url }));
+        try {
+          const sources = await searchWeb(query, { maxResults: body.webSearch.maxResults ?? 5 });
+          sourcesForUi = sources.map((s) => ({ title: s.title, url: s.url }));
 
-        const systemMsg = { role: "system" as const, content: formatWebSearchSystemPrompt(query, sources) };
-        const systemMsgs = body.messages.filter((m) => m.role === "system");
-        const rest = body.messages.filter((m) => m.role !== "system");
-        messages = [...systemMsgs, systemMsg, ...rest];
+          const systemMsg = { role: "system" as const, content: formatWebSearchSystemPrompt(query, sources) };
+          const systemMsgs = body.messages.filter((m) => m.role === "system");
+          const rest = body.messages.filter((m) => m.role !== "system");
+          messages = [...systemMsgs, systemMsg, ...rest];
+        } catch {
+          // Best-effort: if web search is not configured (e.g. missing API key) or fails,
+          // continue the chat without injected sources.
+        }
       }
       }
     }
