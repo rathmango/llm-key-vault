@@ -166,6 +166,9 @@ export default function Home() {
     };
   }, [supabase]);
 
+  const user = session?.user ?? null;
+  const accessToken = session?.access_token ?? null;
+
   // Load sessions from DB
   const loadSessions = useCallback(async () => {
     if (!accessToken) return;
@@ -230,8 +233,6 @@ export default function Home() {
     
     loadMessages();
   }, [accessToken, currentSessionId]);
-
-  const user = session?.user ?? null;
 
   async function signInWithGoogle() {
     if (!supabase) return;
