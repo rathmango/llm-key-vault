@@ -55,6 +55,7 @@ export type Database = {
           title?: string;
           provider?: string;
           model?: string;
+          updated_at?: string;
         };
         Relationships: [];
       };
