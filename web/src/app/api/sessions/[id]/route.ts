@@ -64,9 +64,11 @@ export async function GET(request: Request, context: RouteContext) {
 
     if (messagesError) throw new Error(messagesError.message);
 
-    // Reverse to get chronological order
-    const sortedMessages = (messages ?? []).reverse() as Array<{ id: string; [key: string]: unknown }>;
-    const hasMore = (totalCount ?? 0) > (before ? sortedMessages.length : limit);
+    // Reverse to get chronological order (oldest first)
+    const sortedMessages = (messages ?? []).reverse() as Array<{ id: string; created_at: string; [key: string]: unknown }>;
+    
+    // hasMore: if we got full batch, there might be more
+    const hasMore = sortedMessages.length === limit;
 
     return Response.json({ 
       session, 

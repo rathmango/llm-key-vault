@@ -872,7 +872,8 @@ function ChatView(props: {
         timestamp: new Date(),
       };
 
-      const newMessages = [...messages, userMessage];
+      // Use allMessages (not collapsed view) to preserve full history
+      const newMessages = [...allMessages, userMessage];
       props.onMessagesChange(newMessages);
 
       const assistantId = generateId();
