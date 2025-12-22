@@ -269,6 +269,19 @@ function sanitizeTranscript(text: string): { text: string; isTruncated: boolean;
   return { text: out, isTruncated, segmentsCount };
 }
 
+function sampleTranscriptForAnalysis(text: string): string {
+  const t = text.trim();
+  const MAX_CHARS = 30_000; // keep requests small/robust
+  if (t.length <= MAX_CHARS) return t;
+
+  const part = Math.floor(MAX_CHARS / 3);
+  const start = t.slice(0, part);
+  const midStart = Math.max(0, Math.floor(t.length / 2) - Math.floor(part / 2));
+  const mid = t.slice(midStart, midStart + part);
+  const end = t.slice(-part);
+  return `${start}\n...\n${mid}\n...\n${end}`;
+}
+
 function buildAnalysisMarkdown(args: {
   video: YouTubeVideo;
   summaryMd: string;
@@ -577,7 +590,7 @@ export async function POST(request: Request) {
           `Preferred language hint: ${lang}`,
           "",
           "Transcript:",
-          transcriptText,
+          sampleTranscriptForAnalysis(transcriptText),
         ].join("\n");
 
         const analysisCombined = await geminiGenerateText({

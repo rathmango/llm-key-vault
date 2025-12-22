@@ -278,7 +278,8 @@ function buildYouTubeAnalyzePrompt(url: string, userText: string, ctx?: YouTubeC
 }
 
 function generateId(): string {
-  // Prefer UUID so IDs can safely be used as DB primary keys when needed.
+  // Always return a UUID (chat_messages.id is uuid). Some environments (older mobile browsers)
+  // don't support crypto.randomUUID, so we fall back to crypto.getRandomValues.
   try {
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -287,7 +288,27 @@ function generateId(): string {
   } catch {
     // ignore
   }
-  return Math.random().toString(36).substring(2) + Date.now().toString(36);
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+    if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+      const bytes = new Uint8Array(16);
+      crypto.getRandomValues(bytes);
+      // Per RFC 4122 v4
+      bytes[6] = (bytes[6] & 0x0f) | 0x40;
+      bytes[8] = (bytes[8] & 0x3f) | 0x80;
+      const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+      return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+    }
+  } catch {
+    // ignore
+  }
+
+  // Last resort (valid UUID v4 shape, but not cryptographically strong)
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = Math.floor(Math.random() * 16);
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
 }
 
 function formatRelativeTime(date: Date): string {
@@ -547,7 +568,7 @@ export default function Home() {
         const merged = Array.from(map.values()).sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
 
         const firstUserMsg = merged.find((m) => m.role === "user");
-        const title = firstUserMsg
+        const title = firstUserMsg 
           ? firstUserMsg.content.slice(0, 30) + (firstUserMsg.content.length > 30 ? "…" : "")
           : "새 대화";
 
@@ -1285,7 +1306,7 @@ function ChatView(props: {
       const youtubeUrl = youtubeUrls[0] ?? null;
 
       if (youtubeUrl) {
-        // UX-first: show a quick metadata-based prompt immediately, while running deep analysis in the background.
+        // UX-first: start talking immediately from metadata, while deep analysis runs in the background.
         const metaId = generateId();
         const analysisId = generateId();
 
@@ -1296,28 +1317,55 @@ function ChatView(props: {
           timestamp: new Date(),
         };
 
-        const analysisMessage: Message = {
-          id: analysisId,
-          role: "assistant",
-          content:
-            "⏳ 영상 전문 분석을 백그라운드에서 준비 중이에요.\n\n준비되는 동안에도 궁금한 점을 물어보면, 가능한 범위(제목/설명 기준)로 먼저 답해드릴게요.",
-          timestamp: new Date(),
+        props.onMessagesChange(sessionIdFinal, [...newMessages, metaMessage]);
+
+        const inferTopicHint = (title: string, description: string) => {
+          const hay = `${title}\n${description}`.toLowerCase();
+          const has = (...k: string[]) => k.some((x) => hay.includes(x));
+
+          if (has("금리", "환율", "주식", "증시", "코스피", "코스닥", "부동산", "인플레", "경제", "투자")) {
+            return "경제/투자(금리·환율·시장 흐름)";
+          }
+          if (has("임신", "출산", "산후", "신생아", "육아", "수유", "아기", "아동", "pregnancy", "baby")) {
+            return "출산/육아(준비·케어·체크리스트)";
+          }
+          if (has("릴스", "reels", "shorts", "쇼츠", "편집", "캡컷", "capcut", "인스타", "유튜브 쇼츠")) {
+            return "크리에이터(콘텐츠/릴스/쇼츠 제작)";
+          }
+          if (has("react", "next", "typescript", "node", "ai", "llm", "개발", "프로그래밍", "코딩")) {
+            return "IT/개발(기술/개발 내용)";
+          }
+          return "";
         };
 
-        props.onMessagesChange(sessionIdFinal, [...newMessages, metaMessage, analysisMessage]);
+        const buildOpener = (video: { title?: string; channelTitle?: string; url?: string; description?: string }) => {
+          const title = (video.title ?? "이 영상").trim() || "이 영상";
+          const channel = (video.channelTitle ?? "").trim();
+          const descRaw = (video.description ?? "").replace(/\s+/g, " ").trim();
+          const desc = descRaw.length > 240 ? `${descRaw.slice(0, 240)}…` : descRaw;
+          const topic = inferTopicHint(title, descRaw);
 
-        // Fire-and-forget ingest stream (don't block input)
+          const lines: string[] = [];
+          lines.push(`“${title}” 영상이네${channel ? ` — **${channel}**` : ""}.`);
+          if (topic) lines.push(`대략 **${topic}** 쪽 이야기로 보이고,`);
+          if (desc) lines.push(`설명 분위기는 이런 느낌이야: “${desc}”`);
+          lines.push("");
+          lines.push("지금 뭐가 제일 궁금해?");
+          lines.push("- 한 문장 요약");
+          lines.push("- 핵심 주장/근거만 뽑기");
+          lines.push("- 내 상황에 적용해서 액션으로 바꾸기");
+          lines.push("- 바로 던질 질문 5개 만들기");
+          return lines.join("\n");
+        };
+
+        // Fire-and-forget ingest stream (don't block input). We only update the UI on metadata + final completion.
         void (async () => {
           let metaContent = metaMessage.content;
-          let analysisContent = analysisMessage.content;
-          let videoTitle = "";
+          let finalMarkdown = "";
+          let gotMeta = false;
 
-          const applyUpdate = () => {
-            props.onMessagesChange(sessionIdFinal, [
-              ...newMessages,
-              { ...metaMessage, content: metaContent },
-              { ...analysisMessage, content: analysisContent },
-            ]);
+          const applyMeta = () => {
+            props.onMessagesChange(sessionIdFinal, [...newMessages, { ...metaMessage, content: metaContent }]);
           };
 
           try {
@@ -1336,7 +1384,6 @@ function ChatView(props: {
 
             const decoder = new TextDecoder();
             let buffer = "";
-            let finalMarkdown = "";
 
             while (true) {
               const { done, value } = await reader.read();
@@ -1353,45 +1400,12 @@ function ChatView(props: {
 
                 try {
                   const event = JSON.parse(data);
-
                   if (event.type === "metadata" && event.video) {
-                    videoTitle = event.video?.title ?? "";
-                    const title = event.video?.title ?? "YouTube 영상";
-                    const channel = event.video?.channelTitle ?? "";
-                    const descRaw = (event.video?.description ?? "").replace(/\s+/g, " ").trim();
-                    const desc = descRaw.length > 260 ? `${descRaw.slice(0, 260)}…` : descRaw;
-                    const hint = desc
-                      ? `> ${desc}`
-                      : "> (설명이 길지 않아서 제목/채널 기준으로만 안내할게요.)";
-
-                    metaContent = [
-                      `## 📺 ${title}`,
-                      channel ? `- 채널: **${channel}**` : null,
-                      `- 링크: ${event.video?.url ?? youtubeUrl}`,
-                      "",
-                      "이 영상에 대해 대화하고 싶으신가요?",
-                      "지금은 메타데이터(제목/설명) 기준으로 먼저 안내하고, **뒤에서 전문 분석을 계속 준비**하고 있어요.",
-                      "",
-                      "이 영상은(제목/설명 기준) 대략 이런 내용을 담고 있어요:",
-                      hint,
-                      "",
-                      "어떤 게 궁금하신가요?",
-                      "- 핵심 요약 / 결론",
-                      "- 주장 근거/논리 점검",
-                      "- 투자/실생활 관점 적용",
-                      "- 내가 바로 던질 질문 5개",
-                    ]
-                      .filter(Boolean)
-                      .join("\n");
-                    applyUpdate();
-                  } else if (event.type === "progress") {
-                    const progressBar = "●".repeat(event.step) + "○".repeat(event.total - event.step);
-                    analysisContent = videoTitle
-                      ? `## ⏳ 분석 준비 중 · ${videoTitle}\n\n${progressBar} (${event.step}/${event.total})\n\n${event.message}`
-                      : `${progressBar} (${event.step}/${event.total})\n\n${event.message}`;
-                    applyUpdate();
+                    metaContent = buildOpener(event.video);
+                    gotMeta = true;
+                    applyMeta();
                   } else if (event.type === "complete") {
-                    finalMarkdown = event.analysis?.markdown ?? "YouTube 분석 완료";
+                    finalMarkdown = event.analysis?.markdown ?? "";
                   } else if (event.type === "error") {
                     throw new Error(event.error ?? "YouTube ingest failed");
                   }
@@ -1401,14 +1415,33 @@ function ChatView(props: {
               }
             }
 
-            if (finalMarkdown) {
-              analysisContent = finalMarkdown;
-              applyUpdate();
+            // If we never got metadata for some reason, still keep a reasonable opener.
+            if (!gotMeta) {
+              metaContent = "이 영상으로 대화 시작할게. 지금 제일 궁금한 거 한 줄로만 말해줘.";
+              applyMeta();
+            }
+
+            // When deep analysis completes, append it as a new assistant message (notification).
+            if (finalMarkdown.trim()) {
+              const analysisMsg: Message = {
+                id: analysisId,
+                role: "assistant",
+                content: finalMarkdown,
+                timestamp: new Date(),
+              };
+              props.onMessagesChange(sessionIdFinal, [
+                ...newMessages,
+                { ...metaMessage, content: metaContent },
+                analysisMsg,
+              ]);
             }
           } catch (e) {
-            const msg = e instanceof Error ? e.message : "Unknown error";
-            analysisContent = `⚠️ 영상 분석 실패: ${msg}`;
-            applyUpdate();
+            // Don't spam the chat with failure; keep conversation flowing from metadata.
+            console.warn("YouTube ingest failed:", e);
+            if (!gotMeta) {
+              metaContent = "이 영상으로 대화 시작할게. 지금 제일 궁금한 거 한 줄로만 말해줘.";
+              applyMeta();
+            }
           }
         })();
 
@@ -1549,7 +1582,7 @@ function ChatView(props: {
           }
         }
       }
-      
+
       // Final update with usage
       props.onMessagesChange(sessionIdFinal, [
         ...newMessages,
@@ -1657,9 +1690,9 @@ function ChatView(props: {
           {/* Mobile settings panel */}
           {mobileSettingsOpen && (
             <div className="w-full sm:hidden mt-2 grid grid-cols-1 gap-2">
-              <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2">
                 <span className="w-10 text-xs text-[var(--muted)]">추론</span>
-                <select
+              <select
                   value={props.reasoningEffort}
                   onChange={(e) => props.setReasoningEffort(e.target.value as ReasoningEffort)}
                   className="flex-1 rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-xs outline-none transition hover:border-[var(--border-hover)]"
@@ -1667,10 +1700,10 @@ function ChatView(props: {
                   {REASONING_EFFORTS.map((r) => (
                     <option key={r.value} value={r.value}>
                       {r.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
+                  </option>
+                ))}
+              </select>
+          </div>
               <div className="flex items-center gap-2">
                 <span className="w-10 text-xs text-[var(--muted)]">상세</span>
                 <select

@@ -364,10 +364,10 @@ export async function POST(request: Request) {
           } else {
             systemLines.push("");
             systemLines.push(
-              "Status: Video analysis/transcript is still being prepared. Answer using ONLY the metadata above (title/description/channel) and any existing summary/outline. Do NOT invent specific claims from the video."
+              "Note: Full transcript may not be available yet. Answer using ONLY the metadata above (title/description/channel) and any existing summary/outline. Do NOT invent specific claims from the video."
             );
             systemLines.push(
-              "If the user asks content-specific questions that require the transcript, say it's still preparing, offer what you can from metadata, and tell them you'll answer accurately once the analysis completes (they will see a '✅ 영상 분석 완료' message when ready)."
+              "If the user asks for exact quotes/specific claims that require the transcript, respond cautiously: explain you can't confirm that detail yet, offer what you can from metadata, and ask a clarifying question or suggest waiting briefly for a more accurate answer."
             );
           }
 
