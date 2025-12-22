@@ -334,16 +334,17 @@ export async function POST(request: Request) {
           const transcriptText = typeof vc.transcript_text === "string" ? vc.transcript_text : "";
           const hasTranscript = transcriptText.trim().length > 0;
 
-          if (typeof vc.description === "string" && vc.description.trim()) {
+          const hasSummary = typeof vc.summary_md === "string" && vc.summary_md.trim().length > 0;
+          if (!hasSummary && typeof vc.description === "string" && vc.description.trim()) {
             systemLines.push("");
-            systemLines.push("Description (metadata):");
+            systemLines.push("Description (metadata, do NOT quote verbatim; use it only to infer high-level topics):");
             systemLines.push(vc.description.trim().slice(0, 1200));
           }
 
-          if (typeof vc.summary_md === "string" && vc.summary_md.trim()) {
+          if (hasSummary) {
             systemLines.push("");
             systemLines.push("Summary (md):");
-            systemLines.push(vc.summary_md.trim());
+            systemLines.push((vc.summary_md ?? "").trim());
           }
 
           if (typeof vc.outline_md === "string" && vc.outline_md.trim()) {
@@ -363,11 +364,18 @@ export async function POST(request: Request) {
             }
           } else {
             systemLines.push("");
+            systemLines.push("Behavior when transcript is not ready:");
             systemLines.push(
-              "Note: Full transcript may not be available yet. Answer using ONLY the metadata above (title/description/channel) and any existing summary/outline. Do NOT invent specific claims from the video."
+              "- You CAN and SHOULD talk about what the video is likely about, based on the title/description/summary. Do not say 'there is no way to know the video content'."
             );
             systemLines.push(
-              "If the user asks for exact quotes/specific claims that require the transcript, respond cautiously: explain you can't confirm that detail yet, offer what you can from metadata, and ask a clarifying question or suggest waiting briefly for a more accurate answer."
+              "- Be proactive: start with a short inferred summary (paraphrase, do not quote the description verbatim), then answer the user's question with reasonable high-level inference grounded in metadata."
+            );
+            systemLines.push(
+              "- Do NOT invent precise quotes, numbers, or claims that would require the actual transcript."
+            );
+            systemLines.push(
+              "- If the user asks for an exact quote or a very specific claim, say you can't confirm that exact detail yet, but offer the most helpful answer you can from metadata and ask a clarifying question."
             );
           }
 

@@ -1342,13 +1342,11 @@ function ChatView(props: {
           const title = (video.title ?? "이 영상").trim() || "이 영상";
           const channel = (video.channelTitle ?? "").trim();
           const descRaw = (video.description ?? "").replace(/\s+/g, " ").trim();
-          const desc = descRaw.length > 240 ? `${descRaw.slice(0, 240)}…` : descRaw;
           const topic = inferTopicHint(title, descRaw);
 
           const lines: string[] = [];
           lines.push(`“${title}” 영상이네${channel ? ` — **${channel}**` : ""}.`);
-          if (topic) lines.push(`대략 **${topic}** 쪽 이야기로 보이고,`);
-          if (desc) lines.push(`설명 분위기는 이런 느낌이야: “${desc}”`);
+          if (topic) lines.push(`대략 **${topic}** 쪽 이야기로 보이는데,`);
           lines.push("");
           lines.push("지금 뭐가 제일 궁금해?");
           lines.push("- 한 문장 요약");
@@ -1400,10 +1398,17 @@ function ChatView(props: {
 
                 try {
                   const event = JSON.parse(data);
-                  if (event.type === "metadata" && event.video) {
-                    metaContent = buildOpener(event.video);
+                  if (event.type === "opener" && typeof event.text === "string" && event.text.trim()) {
+                    metaContent = event.text.trim();
                     gotMeta = true;
                     applyMeta();
+                  } else if (event.type === "metadata" && event.video) {
+                    // Fallback opener if server didn't provide one
+                    if (!gotMeta) {
+                      metaContent = buildOpener(event.video);
+                      gotMeta = true;
+                      applyMeta();
+                    }
                   } else if (event.type === "complete") {
                     finalMarkdown = event.analysis?.markdown ?? "";
                   } else if (event.type === "error") {

@@ -520,6 +520,73 @@ export async function POST(request: Request) {
         // ignore
       }
 
+      // Fast UX: generate a metadata-based opener + quick summary (text-only, fast) in parallel.
+      void (async () => {
+        try {
+          const desc = (video.description ?? "").trim();
+          const title = (video.title ?? "").trim();
+          const channel = (video.channelTitle ?? "").trim();
+
+          const metaPrompt = [
+            "You are a helpful assistant.",
+            "",
+            "You are given ONLY YouTube metadata (title/channel/description).",
+            "Infer what the video is likely about and start a conversation.",
+            "",
+            "Return EXACTLY two sections in this order:",
+            "### OPENER",
+            "### META_SUMMARY",
+            "",
+            "Rules:",
+            "- OPENER: 2–4 sentences in Korean. Paraphrase; DO NOT quote the description verbatim. Sound like you understood the video.",
+            "- OPENER must end with ONE question asking what the user is curious about.",
+            "- META_SUMMARY: 6–10 bullet points (Korean) summarizing what the video likely covers, grounded in metadata. No disclaimers about metadata.",
+            "- Keep it concise.",
+            "",
+            "Metadata:",
+            `Title: ${title || "(none)"}`,
+            `Channel: ${channel || "(none)"}`,
+            `Description: ${(desc || "(none)").slice(0, 2000)}`,
+          ].join("\n");
+
+          const metaCombined = await geminiGenerateText({
+            apiKey: geminiKey,
+            model: "gemini-2.5-flash-lite",
+            contents: [{ role: "user", parts: [{ text: metaPrompt }] }],
+          });
+
+          const opener = takeSection(metaCombined, "OPENER") || metaCombined.trim();
+          const metaSummary = takeSection(metaCombined, "META_SUMMARY");
+
+          if (opener.trim()) {
+            await send("opener", { text: opener.trim() });
+          }
+
+          if (metaSummary.trim()) {
+            await supabase
+              .from("video_contexts")
+              .upsert(
+                {
+                  user_id: user.id,
+                  session_id: body.sessionId,
+                  provider: "gemini",
+                  video_id: videoId,
+                  url: video.url,
+                  title: video.title,
+                  channel_title: video.channelTitle,
+                  description: video.description,
+                  transcript_language: lang,
+                  transcript_source: "pending",
+                  summary_md: metaSummary.trim(),
+                },
+                { onConflict: "session_id,video_id" }
+              );
+          }
+        } catch {
+          // ignore opener failures
+        }
+      })();
+
       // Step 2: Transcript acquisition (fast path: YouTube timedtext captions)
       await send("progress", { step: 2, total: 4, message: "📝 자막(캡션) 확인 중…" });
       await updateAssistant(`## 📺 ${video.title ?? "YouTube 영상"}\n\n●●○○ (2/4)\n\n📝 자막(캡션) 확인 중…`);
