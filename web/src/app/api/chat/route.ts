@@ -364,18 +364,18 @@ export async function POST(request: Request) {
             }
           } else {
             systemLines.push("");
-            systemLines.push("Behavior when transcript is not ready:");
+            systemLines.push("When transcript snippets are not available:");
             systemLines.push(
-              "- You CAN and SHOULD talk about what the video is likely about, based on the title/description/summary. Do not say 'there is no way to know the video content'."
+              "- Do NOT mention 'we only have metadata' or 'there is no way to know'. You MUST still provide a useful inferred answer."
             );
             systemLines.push(
-              "- Be proactive: start with a short inferred summary (paraphrase, do not quote the description verbatim), then answer the user's question with reasonable high-level inference grounded in metadata."
+              "- Start with a 1–2 sentence inferred summary of what the video is about (paraphrase; don't quote the description verbatim)."
             );
             systemLines.push(
-              "- Do NOT invent precise quotes, numbers, or claims that would require the actual transcript."
+              "- Then answer the user's question using the metadata summary and title/description. Use hedged language: '…로 보입니다/…일 가능성이 높아요'."
             );
             systemLines.push(
-              "- If the user asks for an exact quote or a very specific claim, say you can't confirm that exact detail yet, but offer the most helpful answer you can from metadata and ask a clarifying question."
+              "- Do NOT invent exact quotes, numbers, or specific claims. If the user asks for a quote or a very specific claim, say you can't confirm that exact detail yet and propose what to ask once analysis completes."
             );
           }
 

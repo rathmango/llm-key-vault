@@ -2,7 +2,7 @@ import { z } from "zod";
 import { requireUser } from "@/lib/api/auth";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { decryptSecret } from "@/lib/crypto";
-import { geminiGenerateText } from "@/lib/gemini";
+import { geminiGenerateText, geminiTranscribeYouTubeUrl } from "@/lib/gemini";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -291,28 +291,13 @@ function buildAnalysisMarkdown(args: {
   transcriptSource: string;
   transcriptTruncated: boolean;
 }): string {
+  // Deprecated for user-visible output. Keep as utility if needed later.
   const lines: string[] = [];
-  lines.push("✅ 영상 분석 완료");
-  lines.push("");
-  lines.push(`## 📺 ${args.video.title ?? "YouTube 영상"}`);
-  if (args.video.channelTitle) lines.push(`- 채널: **${args.video.channelTitle}**`);
-  lines.push(`- 링크: ${args.video.url}`);
-  lines.push("");
-  lines.push("## 요약");
-  lines.push(args.summaryMd || "- (요약 생성 실패)");
-  lines.push("");
-  lines.push("## 타임스탬프 아웃라인");
-  lines.push(args.outlineMd || "- (아웃라인 생성 실패)");
-  lines.push("");
-  lines.push("## 다음 질문 추천");
-  lines.push(args.questionsMd || "- (질문 추천 생성 실패)");
-  lines.push("");
+  lines.push(`📺 ${args.video.title ?? "YouTube 영상"} 분석 완료`);
   if (args.transcriptSaved) {
-    lines.push(
-      `> 전문(트랜스크립트)은 **DB에 저장**되었습니다. (source: \`${args.transcriptSource}\`${args.transcriptTruncated ? ", truncated" : ""})`
-    );
+    lines.push(`(transcript: ${args.transcriptSource}${args.transcriptTruncated ? ", truncated" : ""})`);
   } else {
-    lines.push("> 전문(트랜스크립트)을 저장하지 못했습니다. (Gemini 키 설정 필요)");
+    lines.push("(transcript: not available)");
   }
   return lines.join("\n");
 }
@@ -423,13 +408,7 @@ export async function POST(request: Request) {
           .eq("video_id", videoId)
           .maybeSingle();
 
-        if (
-          existing &&
-          typeof existing.url === "string" &&
-          typeof existing.summary_md === "string" &&
-          typeof existing.outline_md === "string" &&
-          typeof existing.questions_md === "string"
-        ) {
+        if (existing && typeof existing.url === "string") {
           const video: YouTubeVideo = {
             videoId,
             url: existing.url,
@@ -444,28 +423,35 @@ export async function POST(request: Request) {
 
           const transcriptText = typeof existing.transcript_text === "string" ? existing.transcript_text : "";
           const transcriptSanitized = sanitizeTranscript(transcriptText);
-          const transcriptSource = typeof existing.transcript_source === "string" ? existing.transcript_source : "cached";
+          const transcriptSource =
+            typeof existing.transcript_source === "string" && existing.transcript_source.trim()
+              ? existing.transcript_source
+              : transcriptText
+                ? "cached"
+                : "pending";
 
-          const assistantMarkdown = buildAnalysisMarkdown({
-            video,
-            summaryMd: existing.summary_md,
-            outlineMd: existing.outline_md,
-            questionsMd: existing.questions_md,
-            transcriptSaved: Boolean(transcriptSanitized.text),
-            transcriptSource,
-            transcriptTruncated: transcriptSanitized.isTruncated,
-          });
+          const title = video.title ?? "YouTube 영상";
+          const channel = video.channelTitle ?? "";
+          const summary = typeof existing.summary_md === "string" ? existing.summary_md.trim() : "";
+
+          const openerText = [
+            `## 📺 ${title}`,
+            channel ? `- 채널: **${channel}**` : null,
+            `- 링크: ${video.url}`,
+            "",
+            summary ? "이 영상은(메타데이터 기준) 대략 이런 내용을 다루는 것 같아:" : "이 영상은 어떤 내용일까?",
+            summary ? summary : "",
+            "",
+            "지금 뭐가 제일 궁금해?",
+          ]
+            .filter(Boolean)
+            .join("\n");
 
           await send("metadata", { video });
-          await updateAssistant(assistantMarkdown);
+          await send("opener", { text: openerText });
           await send("complete", {
-            context: existing,
-            video,
-            analysis: {
-              markdown: assistantMarkdown,
-              transcriptTruncated: transcriptSanitized.isTruncated,
-              transcriptSegments: transcriptSanitized.segmentsCount,
-            },
+            ready: Boolean(transcriptSanitized.text),
+            transcriptSource,
           });
           await closeStream();
           return;
@@ -481,16 +467,12 @@ export async function POST(request: Request) {
       }
 
       const geminiKey = await loadGeminiKey(user.id);
-      if (!geminiKey) {
-        await sendError("Gemini API key not set. Save it in API Key 탭 (Gemini).");
-        return;
-      }
 
       const lang = (body.lang ?? "ko").trim() || "ko";
       const geminiModel = body.model ?? "gemini-2.5-flash";
 
       // Step 1: Fetch metadata
-      await send("progress", { step: 1, total: 4, message: "🔍 영상 정보 가져오는 중…" });
+      await send("progress", { step: 1, total: 3, message: "🔍 영상 정보 가져오는 중…" });
       await updateAssistant("🔍 영상 정보 가져오는 중…");
       const video = await fetchVideoMeta(ytKey, videoId);
 
@@ -520,9 +502,11 @@ export async function POST(request: Request) {
         // ignore
       }
 
-      // Fast UX: generate a metadata-based opener + quick summary (text-only, fast) in parallel.
+      // Fast UX: generate a metadata-based opener + quick summary (text-only) in parallel.
       void (async () => {
         try {
+          // If user didn't set Gemini key, just skip this helper; we still proceed with captions-based transcript.
+          if (!geminiKey) return;
           const desc = (video.description ?? "").trim();
           const title = (video.title ?? "").trim();
           const channel = (video.channelTitle ?? "").trim();
@@ -551,7 +535,7 @@ export async function POST(request: Request) {
 
           const metaCombined = await geminiGenerateText({
             apiKey: geminiKey,
-            model: "gemini-2.5-flash-lite",
+            model: geminiModel,
             contents: [{ role: "user", parts: [{ text: metaPrompt }] }],
           });
 
@@ -559,7 +543,19 @@ export async function POST(request: Request) {
           const metaSummary = takeSection(metaCombined, "META_SUMMARY");
 
           if (opener.trim()) {
-            await send("opener", { text: opener.trim() });
+            const openerText = [
+              `## 📺 ${title || "YouTube 영상"}`,
+              channel ? `- 채널: **${channel}**` : null,
+              `- 링크: ${video.url}`,
+              "",
+              opener.trim(),
+              "",
+              metaSummary.trim() ? "이 영상은(제목/설명 기준) 대략 이런 내용을 담고 있어:" : null,
+              metaSummary.trim() ? metaSummary.trim() : null,
+            ]
+              .filter(Boolean)
+              .join("\n");
+            await send("opener", { text: openerText });
           }
 
           if (metaSummary.trim()) {
@@ -588,18 +584,14 @@ export async function POST(request: Request) {
       })();
 
       // Step 2: Transcript acquisition (fast path: YouTube timedtext captions)
-      await send("progress", { step: 2, total: 4, message: "📝 자막(캡션) 확인 중…" });
-      await updateAssistant(`## 📺 ${video.title ?? "YouTube 영상"}\n\n●●○○ (2/4)\n\n📝 자막(캡션) 확인 중…`);
+      await send("progress", { step: 2, total: 3, message: "📝 자막(캡션) 확인 중…" });
+      await updateAssistant("📝 자막(캡션) 확인 중…");
 
       let transcriptText = "";
       let transcriptLanguage = lang;
       let transcriptSource = "";
       let transcriptIsTruncated = false;
       let transcriptSegmentsCount = 0;
-
-      let summaryMd = "";
-      let outlineMd = "";
-      let questionsMd = "";
 
       const timed = await fetchTimedTextTranscript(videoId, lang).catch(() => null);
       if (timed && typeof timed.textWithTimestamps === "string" && timed.textWithTimestamps.trim()) {
@@ -632,147 +624,68 @@ export async function POST(request: Request) {
         } catch {
           // ignore
         }
-
-        // Step 3: Generate analysis from transcript text (much faster than video transcription)
-        await send("progress", { step: 3, total: 4, message: "⚡️ 자막 기반으로 요약/아웃라인 생성 중…" });
-        await updateAssistant(`## 📺 ${video.title ?? "YouTube 영상"}\n\n●●●○ (3/4)\n\n⚡️ 자막 기반으로 요약/아웃라인 생성 중…`);
-
-        const analysisPrompt = [
-          "You are an expert video analyst.",
-          "",
-          "You are given a YouTube transcript with timestamps. Use it to create a concise, accurate summary and outline.",
-          "",
-          "Return EXACTLY three sections in this order, each starting with its header line:",
-          "### SUMMARY",
-          "### OUTLINE",
-          "### QUESTIONS",
-          "",
-          "Rules:",
-          "- SUMMARY: 8–12 bullet points in Korean.",
-          "- OUTLINE: bullet list of key moments. Each bullet MUST start with [MM:SS] and MUST be grounded in the transcript timestamps.",
-          "- QUESTIONS: 5 follow-up questions in Korean.",
-          "- Do NOT include a transcript in your response.",
-          "- Output ONLY these sections; no extra text.",
-          "",
-          `Preferred language hint: ${lang}`,
-          "",
-          "Transcript:",
-          sampleTranscriptForAnalysis(transcriptText),
-        ].join("\n");
-
-        const analysisCombined = await geminiGenerateText({
-          apiKey: geminiKey,
-          model: geminiModel,
-          contents: [{ role: "user", parts: [{ text: analysisPrompt }] }],
-        });
-
-        summaryMd = takeSection(analysisCombined, "SUMMARY");
-        outlineMd = takeSection(analysisCombined, "OUTLINE");
-        questionsMd = takeSection(analysisCombined, "QUESTIONS");
       } else {
-        // Fallback: no captions — use Gemini video understanding (slower)
+        // Fallback: no captions — use Gemini video transcription (slow). If Gemini key isn't set, we still complete with metadata only.
         transcriptSource = "gemini";
+        await send("progress", { step: 2, total: 3, message: "🎧 자막 없음 → 음성 전사 중… (시간이 걸릴 수 있어요)" });
+        await updateAssistant("🎧 자막 없음 → 음성 전사 중…");
 
-        await send("progress", { step: 2, total: 4, message: "🎧 자막 없음 → Gemini로 전사/분석 중… (시간이 걸릴 수 있어요)" });
-        await updateAssistant(`## 📺 ${video.title ?? "YouTube 영상"}\n\n●●○○ (2/4)\n\n🎧 자막 없음 → Gemini로 전사/분석 중… (시간이 걸릴 수 있어요)`);
+        if (geminiKey) {
+          try {
+            const tr = await geminiTranscribeYouTubeUrl({
+              apiKey: geminiKey,
+              youtubeUrl: video.url,
+              languageHint: lang,
+              model: geminiModel,
+            });
+            const transcriptSanitized = sanitizeTranscript(tr.textWithTimestamps);
+            transcriptText = transcriptSanitized.text;
+            transcriptIsTruncated = transcriptSanitized.isTruncated;
+            transcriptSegmentsCount = transcriptSanitized.segmentsCount;
+            transcriptLanguage = tr.language;
+            transcriptSource = "gemini";
+          } catch {
+            transcriptSource = "failed";
+            transcriptText = "";
+          }
+        } else {
+          transcriptSource = "failed";
+        }
 
-        const prompt = [
-          "You are an expert YouTube video analyzer and transcription engine.",
-          "",
-          "Return EXACTLY four sections in this order, each starting with its header line:",
-          "### SUMMARY",
-          "### OUTLINE",
-          "### QUESTIONS",
-          "### TRANSCRIPT",
-          "",
-          "Rules:",
-          "- SUMMARY: 8–12 bullet points in Korean.",
-          "- OUTLINE: bullet list of key moments. Each bullet MUST start with [MM:SS].",
-          "- QUESTIONS: 5 follow-up questions in Korean.",
-          "- TRANSCRIPT: FULL transcript of ALL spoken words. Each line MUST be: [MM:SS] <text>",
-          "- Output ONLY these sections; no extra text.",
-          "",
-          `Preferred language hint: ${lang}`,
-          "",
-          "Important: If the video is long, still try to output as much transcript as possible in the required format.",
-        ].join("\n");
-
-        const combined = await geminiGenerateText({
-          apiKey: geminiKey,
-          model: geminiModel,
-          contents: [
-            {
-              role: "user",
-              parts: [{ file_data: { file_uri: video.url } }, { text: prompt }],
-            },
-          ],
-        });
-
-        // Step 3: Parsing results
-        await send("progress", { step: 3, total: 4, message: "📝 결과 정리 중…" });
-        await updateAssistant(`## 📺 ${video.title ?? "YouTube 영상"}\n\n●●●○ (3/4)\n\n📝 결과 정리 중…`);
-
-        summaryMd = takeSection(combined, "SUMMARY");
-        outlineMd = takeSection(combined, "OUTLINE");
-        questionsMd = takeSection(combined, "QUESTIONS");
-        const transcriptRaw = takeSection(combined, "TRANSCRIPT");
-        const transcriptSanitized = sanitizeTranscript(transcriptRaw);
-        transcriptText = transcriptSanitized.text;
-        transcriptIsTruncated = transcriptSanitized.isTruncated;
-        transcriptSegmentsCount = transcriptSanitized.segmentsCount;
+        // Persist whatever we have (maybe empty)
+        try {
+          await supabase
+            .from("video_contexts")
+            .upsert(
+              {
+                user_id: user.id,
+                session_id: body.sessionId,
+                provider: "gemini",
+                video_id: videoId,
+                url: video.url,
+                title: video.title,
+                channel_title: video.channelTitle,
+                description: video.description,
+                transcript_language: transcriptLanguage,
+                transcript_source: transcriptSource,
+                transcript_text: transcriptText,
+              },
+              { onConflict: "session_id,video_id" }
+            );
+        } catch {
+          // ignore
+        }
       }
 
-      // Step 4: Saving to DB
-      await send("progress", { step: 4, total: 4, message: "💾 DB에 저장 중…" });
-      await updateAssistant(`## 📺 ${video.title ?? "YouTube 영상"}\n\n●●●● (4/4)\n\n💾 DB에 저장 중…`);
+      await send("progress", { step: 3, total: 3, message: "✅ 준비 완료" });
+      await updateAssistant("✅ 영상 분석 준비 완료");
 
-      const { data: ctx, error: upsertError } = await supabase
-        .from("video_contexts")
-        .upsert(
-          {
-            user_id: user.id,
-            session_id: body.sessionId,
-            provider: "gemini",
-            video_id: videoId,
-            url: video.url,
-            title: video.title,
-            channel_title: video.channelTitle,
-            description: video.description,
-            transcript_language: transcriptLanguage,
-            transcript_source: transcriptSource,
-            transcript_text: transcriptText,
-            summary_md: summaryMd,
-            outline_md: outlineMd,
-            questions_md: questionsMd,
-          },
-          { onConflict: "session_id,video_id" }
-        )
-        .select()
-        .single();
-
-      if (upsertError) throw new Error(upsertError.message);
-
-      const assistantMarkdown = buildAnalysisMarkdown({
-        video,
-        summaryMd,
-        outlineMd,
-        questionsMd,
-        transcriptSaved: Boolean(transcriptText),
+      // Final result (do NOT send long report to the chat UI)
+      await send("complete", {
+        ready: Boolean(transcriptText),
         transcriptSource: transcriptSource || "unknown",
         transcriptTruncated: transcriptIsTruncated,
-      });
-
-      await updateAssistant(assistantMarkdown);
-
-      // Final result
-      await send("complete", {
-        context: ctx,
-        video,
-        analysis: {
-          markdown: assistantMarkdown,
-          transcriptTruncated: transcriptIsTruncated,
-          transcriptSegments: transcriptSegmentsCount,
-        },
+        transcriptSegments: transcriptSegmentsCount,
       });
 
       await closeStream();

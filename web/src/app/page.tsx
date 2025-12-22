@@ -1308,7 +1308,6 @@ function ChatView(props: {
       if (youtubeUrl) {
         // UX-first: start talking immediately from metadata, while deep analysis runs in the background.
         const metaId = generateId();
-        const analysisId = generateId();
 
         const metaMessage: Message = {
           id: metaId,
@@ -1356,11 +1355,12 @@ function ChatView(props: {
           return lines.join("\n");
         };
 
-        // Fire-and-forget ingest stream (don't block input). We only update the UI on metadata + final completion.
+        // Fire-and-forget ingest stream (don't block input). We only update the existing meta message.
         void (async () => {
           let metaContent = metaMessage.content;
-          let finalMarkdown = "";
           let gotMeta = false;
+          let metaVideo: any = null;
+          let readyNoteAppended = false;
 
           const applyMeta = () => {
             props.onMessagesChange(sessionIdFinal, [...newMessages, { ...metaMessage, content: metaContent }]);
@@ -1369,7 +1369,7 @@ function ChatView(props: {
           try {
             const ingestRes = await props.authedFetch("/api/youtube/ingest", {
               method: "POST",
-              body: JSON.stringify({ sessionId: sessionIdFinal, url: youtubeUrl, lang: "ko", assistantMessageId: analysisId }),
+              body: JSON.stringify({ sessionId: sessionIdFinal, url: youtubeUrl, lang: "ko" }),
             });
 
             if (!ingestRes.ok) {
@@ -1403,14 +1403,15 @@ function ChatView(props: {
                     gotMeta = true;
                     applyMeta();
                   } else if (event.type === "metadata" && event.video) {
-                    // Fallback opener if server didn't provide one
-                    if (!gotMeta) {
-                      metaContent = buildOpener(event.video);
-                      gotMeta = true;
+                    // Keep for fallback in case opener isn't available
+                    metaVideo = event.video;
+                  } else if (event.type === "complete") {
+                    const ready = typeof event.ready === "boolean" ? event.ready : true;
+                    if (ready && !readyNoteAppended) {
+                      metaContent = `${metaContent}\n\n✅ 영상 내용 분석 준비 완료`;
+                      readyNoteAppended = true;
                       applyMeta();
                     }
-                  } else if (event.type === "complete") {
-                    finalMarkdown = event.analysis?.markdown ?? "";
                   } else if (event.type === "error") {
                     throw new Error(event.error ?? "YouTube ingest failed");
                   }
@@ -1422,24 +1423,15 @@ function ChatView(props: {
 
             // If we never got metadata for some reason, still keep a reasonable opener.
             if (!gotMeta) {
-              metaContent = "이 영상으로 대화 시작할게. 지금 제일 궁금한 거 한 줄로만 말해줘.";
+              if (metaVideo) {
+                metaContent = buildOpener(metaVideo);
+              } else {
+                metaContent = "이 영상으로 대화 시작할게. 지금 제일 궁금한 거 한 줄로만 말해줘.";
+              }
               applyMeta();
             }
 
-            // When deep analysis completes, append it as a new assistant message (notification).
-            if (finalMarkdown.trim()) {
-              const analysisMsg: Message = {
-                id: analysisId,
-                role: "assistant",
-                content: finalMarkdown,
-                timestamp: new Date(),
-              };
-              props.onMessagesChange(sessionIdFinal, [
-                ...newMessages,
-                { ...metaMessage, content: metaContent },
-                analysisMsg,
-              ]);
-            }
+            // No long auto-report message on completion (analysis is stored server-side).
           } catch (e) {
             // Don't spam the chat with failure; keep conversation flowing from metadata.
             console.warn("YouTube ingest failed:", e);
