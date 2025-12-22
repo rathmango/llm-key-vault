@@ -550,7 +550,7 @@ export default function Home() {
   // Content based on login state
   if (!supabase) {
     return (
-      <div className="flex h-screen items-center justify-center">
+      <div className="flex h-[100dvh] items-center justify-center">
         <div className="max-w-md rounded-2xl border border-[var(--border)] bg-[var(--card)] p-8 text-center">
           <h1 className="text-xl font-semibold">환경변수 설정 필요</h1>
           <p className="mt-3 text-sm text-[var(--muted)]">
@@ -564,7 +564,7 @@ export default function Home() {
 
   if (!user) {
     return (
-      <div className="flex h-screen items-center justify-center bg-[#0f0f10]">
+      <div className="flex h-[100dvh] items-center justify-center bg-[#0f0f10]">
         <div className="max-w-sm rounded-2xl border border-[#27272a] bg-[#18181b] p-8 text-center animate-fade-in">
           <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-[#7c3aed]/20">
             <IconKey />
@@ -585,7 +585,7 @@ export default function Home() {
   }
 
   return (
-    <div className="flex h-screen overflow-hidden bg-[var(--background)]">
+    <div className="flex h-[100dvh] overflow-hidden bg-[var(--background)]">
       {/* Mobile overlay */}
       {sidebarOpen && (
         <div 
@@ -685,6 +685,7 @@ export default function Home() {
                       }
                       setCurrentSessionId(s.id);
                       setModel(s.model);
+                      setActiveTab("chat");
                       setSidebarOpen(false);
                     }}
                     className={`w-full rounded-lg px-3 py-3 text-left text-sm transition active:scale-[0.98] ${
@@ -1128,14 +1129,15 @@ function ChatView(props: {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>("");
-  const [webSearchEnabled, setWebSearchEnabled] = useState(false);
-  const [webSearchMaxResults, setWebSearchMaxResults] = useState(10);
+  const [mobileSettingsOpen, setMobileSettingsOpen] = useState(false);
   const [pendingImages, setPendingImages] = useState<string[]>([]);
   const [collapsedMessages, setCollapsedMessages] = useState(true); // Collapse old messages by default
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const WEB_SEARCH_MAX_RESULTS = 10;
   
   // Scroll handler for loading more messages
   const handleScroll = useCallback(() => {
@@ -1153,37 +1155,6 @@ function ChatView(props: {
       });
     }
   }, [props]);
-
-  // Persist web search settings
-  useEffect(() => {
-    try {
-      const savedEnabled = localStorage.getItem("llmkv:webSearchEnabled");
-      if (savedEnabled === "0") setWebSearchEnabled(false);
-      if (savedEnabled === "1") setWebSearchEnabled(true);
-
-      const savedMax = localStorage.getItem("llmkv:webSearchMaxResults");
-      const n = savedMax ? Number(savedMax) : NaN;
-      if ([5, 10, 15, 20].includes(n)) setWebSearchMaxResults(n);
-    } catch {
-      // ignore
-    }
-  }, []);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem("llmkv:webSearchEnabled", webSearchEnabled ? "1" : "0");
-    } catch {
-      // ignore
-    }
-  }, [webSearchEnabled]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem("llmkv:webSearchMaxResults", String(webSearchMaxResults));
-    } catch {
-      // ignore
-    }
-  }, [webSearchMaxResults]);
 
   // Handle image paste
   useEffect(() => {
@@ -1424,7 +1395,6 @@ function ChatView(props: {
       // Web search: auto-detect if query needs real-time info, or use manual toggle
       const needsWebSearch = (() => {
         if (youtubeUrl) return false; // YouTube has its own context pipeline
-        if (webSearchEnabled) return true; // Manual toggle on
         
         // Auto-detect: keywords that typically need current/real-time info or explicit search requests
         const q = userContentOriginal.toLowerCase();
@@ -1448,7 +1418,7 @@ function ChatView(props: {
       })();
       
       if (needsWebSearch) {
-        requestBody.webSearch = { enabled: true, maxResults: webSearchMaxResults };
+        requestBody.webSearch = { enabled: true, maxResults: WEB_SEARCH_MAX_RESULTS };
       }
       
       const res = await props.authedFetch("/api/chat", {
@@ -1576,6 +1546,15 @@ function ChatView(props: {
           <span className="rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm text-[var(--muted)]">
             GPT-5.2
           </span>
+
+          {/* Mobile: show settings button */}
+          <button
+            onClick={() => setMobileSettingsOpen((v) => !v)}
+            className="sm:hidden rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-xs font-medium text-[var(--muted)] transition hover:border-[var(--border-hover)]"
+            aria-label="설정"
+          >
+            {mobileSettingsOpen ? "설정 닫기" : "설정"}
+          </button>
           
           {/* Parameters - hide on mobile */}
           <div className="hidden sm:flex sm:items-center sm:gap-2">
@@ -1609,32 +1588,42 @@ function ChatView(props: {
             </div>
           </div>
 
-          {/* Web search toggle */}
-          <div className="flex items-center gap-2">
-            <label className="flex items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--card)] px-2 py-2 text-xs text-[var(--muted)] transition hover:border-[var(--border-hover)] sm:px-3 sm:py-1.5">
-              <input
-                type="checkbox"
-                checked={webSearchEnabled}
-                onChange={(e) => setWebSearchEnabled(e.target.checked)}
-                className="accent-[var(--accent)]"
-              />
-              웹검색
-            </label>
-            {webSearchEnabled && (
-              <select
-                value={webSearchMaxResults}
-                onChange={(e) => setWebSearchMaxResults(Number(e.target.value))}
-                className="rounded-lg border border-[var(--border)] bg-[var(--card)] px-2 py-2 text-xs outline-none transition hover:border-[var(--border-hover)] sm:px-3 sm:py-1.5"
-                title="검색 결과 개수"
-              >
-                {[5, 10, 15, 20].map((n) => (
-                  <option key={n} value={n}>
-                    {n}개
-                  </option>
-                ))}
-              </select>
-            )}
-          </div>
+          {/* Mobile settings panel */}
+          {mobileSettingsOpen && (
+            <div className="w-full sm:hidden mt-2 grid grid-cols-1 gap-2">
+              <div className="flex items-center gap-2">
+                <span className="w-10 text-xs text-[var(--muted)]">추론</span>
+                <select
+                  value={props.reasoningEffort}
+                  onChange={(e) => props.setReasoningEffort(e.target.value as ReasoningEffort)}
+                  className="flex-1 rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-xs outline-none transition hover:border-[var(--border-hover)]"
+                >
+                  {REASONING_EFFORTS.map((r) => (
+                    <option key={r.value} value={r.value}>
+                      {r.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="w-10 text-xs text-[var(--muted)]">상세</span>
+                <select
+                  value={props.verbosity}
+                  onChange={(e) => props.setVerbosity(e.target.value as Verbosity)}
+                  className="flex-1 rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-xs outline-none transition hover:border-[var(--border-hover)]"
+                >
+                  {VERBOSITIES.map((v) => (
+                    <option key={v.value} value={v.value}>
+                      {v.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="text-[11px] text-[var(--muted)]">
+                웹검색은 질문 내용(예: 오늘/최근/검색해줘)에 따라 자동으로만 사용돼요.
+              </div>
+            </div>
+          )}
         </div>
         <div className="hidden text-xs text-[var(--muted)] sm:block">
           Ctrl+V로 이미지 붙여넣기
@@ -1648,7 +1637,7 @@ function ChatView(props: {
         className="flex-1 overflow-y-auto px-3 py-3 sm:px-6 sm:py-4"
       >
         {messages.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center text-center animate-fade-in px-4">
+          <div className="flex flex-col items-center justify-start text-center animate-fade-in px-4 pt-8 pb-6">
             <div className="mx-auto mb-4 flex h-14 w-14 sm:h-16 sm:w-16 items-center justify-center rounded-2xl bg-[var(--accent)]/20">
               <IconChat />
             </div>
@@ -1661,7 +1650,7 @@ function ChatView(props: {
             </p>
 
             {/* Quick starters (for users who struggle to ask the first question) */}
-            <div className="mt-5 flex flex-wrap justify-center gap-2">
+            <div className="mt-5 flex w-full max-w-md gap-2 overflow-x-auto pb-1">
               {[
                 { label: "주제 추천", prompt: "내가 대화 주제를 잘 못 정해. 오늘 이야기할 주제 5개만 추천해줘. (경제/출산/육아/릴스/일상 중에서)" },
                 { label: "경제 브리핑", prompt: "오늘 한국 경제/정책에서 중요한 이슈 5개를 3줄 요약으로 알려주고, 각각 '왜 중요한지'도 1줄씩 설명해줘." },
@@ -1671,7 +1660,7 @@ function ChatView(props: {
                 <button
                   key={x.label}
                   onClick={() => void send({ content: x.prompt })}
-                  className="rounded-full border border-[var(--border)] bg-[var(--card)] px-3 py-1.5 text-xs font-medium text-[var(--muted)] transition hover:border-[var(--border-hover)] hover:text-[var(--foreground)]"
+                  className="flex-none rounded-full border border-[var(--border)] bg-[var(--card)] px-3 py-1.5 text-xs font-medium text-[var(--muted)] transition hover:border-[var(--border-hover)] hover:text-[var(--foreground)]"
                 >
                   {x.label}
                 </button>
@@ -1679,7 +1668,7 @@ function ChatView(props: {
             </div>
 
             <div className="mt-3 text-xs text-[var(--muted)]">
-              YouTube 링크는 <span className="font-medium">Home</span> 탭 입력창에 붙여넣어도 돼요.
+              YouTube 링크는 <span className="font-medium">Home</span>에서 붙여넣거나, 여기서 바로 보내도 돼요.
             </div>
           </div>
         ) : (
