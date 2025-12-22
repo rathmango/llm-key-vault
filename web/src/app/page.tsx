@@ -538,11 +538,20 @@ export default function Home() {
     setSessions((prev) =>
       prev.map((s) => {
         if (s.id !== sessionId) return s;
-        const firstUserMsg = messages.find((m) => m.role === "user");
-        const title = firstUserMsg 
+
+        // Merge by id so background updates (e.g. YouTube ingest progress) don't overwrite
+        // messages appended after this call started.
+        const map = new Map<string, Message>();
+        for (const m of s.messages ?? []) map.set(m.id, m);
+        for (const m of messages) map.set(m.id, m);
+        const merged = Array.from(map.values()).sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+
+        const firstUserMsg = merged.find((m) => m.role === "user");
+        const title = firstUserMsg
           ? firstUserMsg.content.slice(0, 30) + (firstUserMsg.content.length > 30 ? "…" : "")
           : "새 대화";
-        return { ...s, messages, title, updatedAt: new Date() };
+
+        return { ...s, messages: merged, title, updatedAt: new Date() };
       })
     );
   }
@@ -1246,7 +1255,6 @@ function ChatView(props: {
     const sessionIdFinal = sessionId as string;
     setInput("");
     setPendingImages([]);
-    setLoading(true);
     setError("");
 
     try {
@@ -1272,6 +1280,144 @@ function ChatView(props: {
       const newMessages = [...allMessages, userMessage];
       props.onMessagesChange(sessionIdFinal, newMessages);
 
+      // Build messages for API - include images as content parts
+      const youtubeUrls = extractYouTubeUrls(userMessage.content);
+      const youtubeUrl = youtubeUrls[0] ?? null;
+
+      if (youtubeUrl) {
+        // UX-first: show a quick metadata-based prompt immediately, while running deep analysis in the background.
+        const metaId = generateId();
+        const analysisId = generateId();
+
+        const metaMessage: Message = {
+          id: metaId,
+          role: "assistant",
+          content: "🎬 영상 정보를 불러오는 중…",
+          timestamp: new Date(),
+        };
+
+        const analysisMessage: Message = {
+          id: analysisId,
+          role: "assistant",
+          content:
+            "⏳ 영상 전문 분석을 백그라운드에서 준비 중이에요.\n\n준비되는 동안에도 궁금한 점을 물어보면, 가능한 범위(제목/설명 기준)로 먼저 답해드릴게요.",
+          timestamp: new Date(),
+        };
+
+        props.onMessagesChange(sessionIdFinal, [...newMessages, metaMessage, analysisMessage]);
+
+        // Fire-and-forget ingest stream (don't block input)
+        void (async () => {
+          let metaContent = metaMessage.content;
+          let analysisContent = analysisMessage.content;
+          let videoTitle = "";
+
+          const applyUpdate = () => {
+            props.onMessagesChange(sessionIdFinal, [
+              ...newMessages,
+              { ...metaMessage, content: metaContent },
+              { ...analysisMessage, content: analysisContent },
+            ]);
+          };
+
+          try {
+            const ingestRes = await props.authedFetch("/api/youtube/ingest", {
+              method: "POST",
+              body: JSON.stringify({ sessionId: sessionIdFinal, url: youtubeUrl, lang: "ko", assistantMessageId: analysisId }),
+            });
+
+            if (!ingestRes.ok) {
+              const errJson = await ingestRes.json().catch(() => ({}));
+              throw new Error(errJson?.error ?? "YouTube ingest failed");
+            }
+
+            const reader = ingestRes.body?.getReader();
+            if (!reader) throw new Error("No response body");
+
+            const decoder = new TextDecoder();
+            let buffer = "";
+            let finalMarkdown = "";
+
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+
+              buffer += decoder.decode(value, { stream: true });
+              const lines = buffer.split("\n");
+              buffer = lines.pop() || "";
+
+              for (const line of lines) {
+                if (!line.startsWith("data: ")) continue;
+                const data = line.slice(6).trim();
+                if (!data || data === "[DONE]") continue;
+
+                try {
+                  const event = JSON.parse(data);
+
+                  if (event.type === "metadata" && event.video) {
+                    videoTitle = event.video?.title ?? "";
+                    const title = event.video?.title ?? "YouTube 영상";
+                    const channel = event.video?.channelTitle ?? "";
+                    const descRaw = (event.video?.description ?? "").replace(/\s+/g, " ").trim();
+                    const desc = descRaw.length > 260 ? `${descRaw.slice(0, 260)}…` : descRaw;
+                    const hint = desc
+                      ? `> ${desc}`
+                      : "> (설명이 길지 않아서 제목/채널 기준으로만 안내할게요.)";
+
+                    metaContent = [
+                      `## 📺 ${title}`,
+                      channel ? `- 채널: **${channel}**` : null,
+                      `- 링크: ${event.video?.url ?? youtubeUrl}`,
+                      "",
+                      "이 영상에 대해 대화하고 싶으신가요?",
+                      "지금은 메타데이터(제목/설명) 기준으로 먼저 안내하고, **뒤에서 전문 분석을 계속 준비**하고 있어요.",
+                      "",
+                      "이 영상은(제목/설명 기준) 대략 이런 내용을 담고 있어요:",
+                      hint,
+                      "",
+                      "어떤 게 궁금하신가요?",
+                      "- 핵심 요약 / 결론",
+                      "- 주장 근거/논리 점검",
+                      "- 투자/실생활 관점 적용",
+                      "- 내가 바로 던질 질문 5개",
+                    ]
+                      .filter(Boolean)
+                      .join("\n");
+                    applyUpdate();
+                  } else if (event.type === "progress") {
+                    const progressBar = "●".repeat(event.step) + "○".repeat(event.total - event.step);
+                    analysisContent = videoTitle
+                      ? `## ⏳ 분석 준비 중 · ${videoTitle}\n\n${progressBar} (${event.step}/${event.total})\n\n${event.message}`
+                      : `${progressBar} (${event.step}/${event.total})\n\n${event.message}`;
+                    applyUpdate();
+                  } else if (event.type === "complete") {
+                    finalMarkdown = event.analysis?.markdown ?? "YouTube 분석 완료";
+                  } else if (event.type === "error") {
+                    throw new Error(event.error ?? "YouTube ingest failed");
+                  }
+                } catch {
+                  // ignore invalid JSON
+                }
+              }
+            }
+
+            if (finalMarkdown) {
+              analysisContent = finalMarkdown;
+              applyUpdate();
+            }
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : "Unknown error";
+            analysisContent = `⚠️ 영상 분석 실패: ${msg}`;
+            applyUpdate();
+          }
+        })();
+
+        return;
+      }
+
+      // Non-YouTube: normal chat streaming
+      setLoading(true);
+
       const assistantId = generateId();
       let assistantContent = "";
       let assistantThinking = "";
@@ -1285,86 +1431,6 @@ function ChatView(props: {
         timestamp: new Date(),
       };
       props.onMessagesChange(sessionIdFinal, [...newMessages, assistantMessage]);
-
-      // Build messages for API - include images as content parts
-      const youtubeUrls = extractYouTubeUrls(userMessage.content);
-      const youtubeUrl = youtubeUrls[0] ?? null;
-
-      if (youtubeUrl) {
-        // YouTube ingestion pipeline with SSE progress updates
-        const ingestRes = await props.authedFetch("/api/youtube/ingest", {
-          method: "POST",
-          body: JSON.stringify({ sessionId: sessionIdFinal, url: youtubeUrl, lang: "ko", assistantMessageId: assistantId }),
-        });
-
-        if (!ingestRes.ok) {
-          const errJson = await ingestRes.json().catch(() => ({}));
-          throw new Error(errJson?.error ?? "YouTube ingest failed");
-        }
-
-        // Stream progress updates
-        const reader = ingestRes.body?.getReader();
-        if (!reader) throw new Error("No response body");
-
-        const decoder = new TextDecoder();
-        let buffer = "";
-        let videoTitle = "";
-        let finalMarkdown = "";
-
-        // Initial progress message
-        props.onMessagesChange(sessionIdFinal, [
-          ...newMessages,
-          { ...assistantMessage, content: "🎬 영상 분석 시작…" },
-        ]);
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop() || "";
-
-          for (const line of lines) {
-            if (!line.startsWith("data: ")) continue;
-            const data = line.slice(6).trim();
-            if (!data || data === "[DONE]") continue;
-
-            try {
-              const event = JSON.parse(data);
-
-              if (event.type === "progress") {
-                const progressBar = "●".repeat(event.step) + "○".repeat(event.total - event.step);
-                const progressContent = videoTitle
-                  ? `## 📺 ${videoTitle}\n\n${progressBar} (${event.step}/${event.total})\n\n${event.message}`
-                  : `${progressBar} (${event.step}/${event.total})\n\n${event.message}`;
-                props.onMessagesChange(sessionIdFinal, [
-                  ...newMessages,
-                  { ...assistantMessage, content: progressContent },
-                ]);
-              } else if (event.type === "metadata" && event.video?.title) {
-                videoTitle = event.video.title;
-              } else if (event.type === "complete") {
-                finalMarkdown = event.analysis?.markdown ?? "YouTube 컨텍스트 저장 완료";
-              } else if (event.type === "error") {
-                throw new Error(event.error ?? "YouTube ingest failed");
-              }
-            } catch (parseErr) {
-              // Skip invalid JSON lines
-              if (parseErr instanceof Error && parseErr.message.includes("ingest")) {
-                throw parseErr;
-              }
-            }
-          }
-        }
-
-        // Update UI with final result
-        props.onMessagesChange(sessionIdFinal, [
-          ...newMessages,
-          { ...assistantMessage, content: finalMarkdown || "YouTube 컨텍스트 저장 완료" },
-        ]);
-        return;
-      }
 
       const modelUserContent = userMessage.content;
 

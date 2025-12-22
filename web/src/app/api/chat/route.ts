@@ -307,7 +307,7 @@ export async function POST(request: Request) {
         const supabase = getSupabaseAdmin();
         const { data: vc } = await supabase
           .from("video_contexts")
-          .select("title,channel_title,url,summary_md,outline_md,transcript_text,transcript_source,transcript_language")
+          .select("title,channel_title,url,description,summary_md,outline_md,transcript_text,transcript_source,transcript_language")
           .eq("session_id", body.sessionId)
           .eq("user_id", user.id)
           .order("updated_at", { ascending: false })
@@ -322,8 +322,7 @@ export async function POST(request: Request) {
               ? (lastUser.content as Array<{ type: string; text?: string }>).filter((p) => p.type === "text").map((p) => p.text ?? "").join("\n")
               : "";
 
-        if (vc && typeof vc.transcript_text === "string" && vc.transcript_text.trim()) {
-          const snippets = buildTranscriptSnippets(vc.transcript_text, lastUserText);
+        if (vc) {
           const systemLines: string[] = [];
           systemLines.push("[Video context for this chat session]");
           if (typeof vc.title === "string" && vc.title.trim()) systemLines.push(`Title: ${vc.title}`);
@@ -331,6 +330,15 @@ export async function POST(request: Request) {
           if (typeof vc.url === "string" && vc.url.trim()) systemLines.push(`URL: ${vc.url}`);
           if (typeof vc.transcript_language === "string" && vc.transcript_language.trim()) systemLines.push(`Transcript language: ${vc.transcript_language}`);
           if (typeof vc.transcript_source === "string" && vc.transcript_source.trim()) systemLines.push(`Transcript source: ${vc.transcript_source}`);
+
+          const transcriptText = typeof vc.transcript_text === "string" ? vc.transcript_text : "";
+          const hasTranscript = transcriptText.trim().length > 0;
+
+          if (typeof vc.description === "string" && vc.description.trim()) {
+            systemLines.push("");
+            systemLines.push("Description (metadata):");
+            systemLines.push(vc.description.trim().slice(0, 1200));
+          }
 
           if (typeof vc.summary_md === "string" && vc.summary_md.trim()) {
             systemLines.push("");
@@ -344,10 +352,23 @@ export async function POST(request: Request) {
             systemLines.push(vc.outline_md.trim());
           }
 
-          if (snippets) {
+          if (hasTranscript) {
+            const snippets = buildTranscriptSnippets(transcriptText, lastUserText);
+            if (snippets) {
+              systemLines.push("");
+              systemLines.push(
+                "Relevant transcript snippets (timestamped). Use these for factual answers; do not quote the entire transcript unless asked:"
+              );
+              systemLines.push(snippets);
+            }
+          } else {
             systemLines.push("");
-            systemLines.push("Relevant transcript snippets (timestamped). Use these for factual answers; do not quote the entire transcript unless asked:");
-            systemLines.push(snippets);
+            systemLines.push(
+              "Status: Video analysis/transcript is still being prepared. Answer using ONLY the metadata above (title/description/channel) and any existing summary/outline. Do NOT invent specific claims from the video."
+            );
+            systemLines.push(
+              "If the user asks content-specific questions that require the transcript, say it's still preparing, offer what you can from metadata, and tell them you'll answer accurately once the analysis completes (they will see a '✅ 영상 분석 완료' message when ready)."
+            );
           }
 
           const systemMsg: z.infer<typeof MessageSchema> = { role: "system", content: systemLines.join("\n") };
