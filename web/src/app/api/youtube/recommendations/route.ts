@@ -391,23 +391,19 @@ export async function GET(request: Request) {
     let cache = getCache(category);
     const bypassCache = refresh !== "" && refresh !== "0";
     // Decide “freshness + sort” strategy.
-    // Default: recent(30d) + popular(viewCount).
-    // On refresh: rotate strategies a bit to avoid “always the same” while staying recent & relevant.
+    // IMPORTANT: We intentionally do NOT use order=date (newest) because it often returns low-quality/noise.
+    // We only surface "recent + popular" (viewCount) and rotate the time window on refresh for variety.
     const refreshSeedNum = Number.isFinite(Number(refresh)) ? Number(refresh) : hashSeed(refresh);
-    const refreshMode = bypassCache ? Math.abs(Math.trunc(refreshSeedNum)) % 3 : 0;
+    const refreshMode = bypassCache ? Math.abs(Math.trunc(refreshSeedNum)) % 4 : 0;
 
-    let order: "viewCount" | "date" = "viewCount";
+    const order: "viewCount" = "viewCount";
     let freshDays = 30;
     if (bypassCache) {
-      if (refreshMode === 1) {
-        // Very fresh, newest first
-        order = "date";
-        freshDays = 14;
-      } else if (refreshMode === 2) {
-        // Slightly wider window, still popular
-        order = "viewCount";
-        freshDays = 60;
-      }
+      // Rotate recency window while keeping popularity sorting.
+      // 0: 30d (default), 1: 14d (very recent), 2: 60d (wider), 3: 90d (wider)
+      if (refreshMode === 1) freshDays = 14;
+      else if (refreshMode === 2) freshDays = 60;
+      else if (refreshMode === 3) freshDays = 90;
     }
 
     const loadAndCache = async (days: number) => {
