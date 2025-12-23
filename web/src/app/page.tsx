@@ -1250,6 +1250,80 @@ function ChatView(props: {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [allMessages.length]);
 
+  const hasPendingVideoAnswer = allMessages.some(
+    (m) => m.role === "assistant" && typeof m.content === "string" && m.content.includes("⏳ 영상 분석 중")
+  );
+
+  // Poll the DB while we have a pending video answer placeholder. This makes “answer later” actually appear in the UI.
+  useEffect(() => {
+    const sessionId = props.session?.id;
+    if (!sessionId) return;
+    if (!hasPendingVideoAnswer) return;
+
+    let cancelled = false;
+    let ticks = 0;
+    const MAX_TICKS = 180; // ~6 minutes @ 2s
+
+    const poll = async () => {
+      if (cancelled) return;
+      ticks += 1;
+      if (ticks > MAX_TICKS) return;
+
+      try {
+        const res = await props.authedFetch(`/api/sessions/${sessionId}?limit=30`, { method: "GET" });
+        if (!res.ok) return;
+        const json = await res.json().catch(() => null);
+        const raw = (json?.messages ?? []) as Array<{
+          id: string;
+          role: string;
+          content: string;
+          images?: string[];
+          thinking?: string | null;
+          sources?: unknown;
+          usage_input_tokens?: number | null;
+          usage_output_tokens?: number | null;
+          usage_reasoning_tokens?: number | null;
+          created_at: string;
+        }>;
+
+        const msgs: Message[] = raw.map((m) => ({
+          id: m.id,
+          role: m.role as "user" | "assistant",
+          content: m.content,
+          images: m.images,
+          thinking: m.thinking ?? undefined,
+          sources: normalizeSources(m.sources),
+          usage: m.usage_input_tokens
+            ? {
+                inputTokens: m.usage_input_tokens ?? undefined,
+                outputTokens: m.usage_output_tokens ?? undefined,
+                reasoningTokens: m.usage_reasoning_tokens ?? undefined,
+              }
+            : undefined,
+          timestamp: new Date(m.created_at),
+        }));
+
+        props.onMessagesChange(sessionId, msgs);
+
+        const stillPending = msgs.some(
+          (m) => m.role === "assistant" && typeof m.content === "string" && m.content.includes("⏳ 영상 분석 중")
+        );
+        if (!stillPending) {
+          cancelled = true;
+        }
+      } catch {
+        // ignore
+      }
+    };
+
+    void poll();
+    const t = window.setInterval(() => void poll(), 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(t);
+    };
+  }, [props.session?.id, hasPendingVideoAnswer, props.authedFetch, props.onMessagesChange]);
+
   useEffect(() => {
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
@@ -1486,6 +1560,7 @@ function ChatView(props: {
         verbosity: props.verbosity,
         sessionId: sessionIdFinal,
         assistantMessageId: assistantId,
+        userMessageId: userMessage.id,
       };
 
       // Web search: auto-detect if query needs real-time info, or use manual toggle

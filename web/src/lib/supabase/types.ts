@@ -148,6 +148,44 @@ export type Database = {
         };
         Relationships: [];
       };
+
+      video_answer_jobs: {
+        Row: {
+          id: string;
+          user_id: string;
+          session_id: string;
+          video_id: string;
+          user_message_id: string | null;
+          assistant_message_id: string;
+          question_text: string;
+          status: string;
+          error: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          session_id: string;
+          video_id: string;
+          user_message_id?: string | null;
+          assistant_message_id: string;
+          question_text: string;
+          status?: string;
+          error?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          user_message_id?: string | null;
+          assistant_message_id?: string;
+          question_text?: string;
+          status?: string;
+          error?: string | null;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: Record<string, never>;

@@ -3,6 +3,7 @@ import { requireUser } from "@/lib/api/auth";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { decryptSecret } from "@/lib/crypto";
 import { geminiGenerateText, geminiTranscribeYouTubeUrl } from "@/lib/gemini";
+import { loadUserApiKey } from "@/lib/llm";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -280,6 +281,165 @@ function sampleTranscriptForAnalysis(text: string): string {
   const mid = t.slice(midStart, midStart + part);
   const end = t.slice(-part);
   return `${start}\n...\n${mid}\n...\n${end}`;
+}
+
+function extractKeywordsForSnippets(text: string): string[] {
+  const raw = text
+    .toLowerCase()
+    .replace(/https?:\/\/\S+/g, " ")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .split(/\s+/)
+    .map((t) => t.trim())
+    .filter(Boolean);
+
+  const stop = new Set([
+    "the",
+    "a",
+    "an",
+    "and",
+    "or",
+    "to",
+    "of",
+    "in",
+    "on",
+    "for",
+    "with",
+    "is",
+    "are",
+    "이",
+    "그",
+    "저",
+    "것",
+    "수",
+    "좀",
+    "왜",
+    "뭐",
+    "뭔",
+    "어떤",
+    "어떻게",
+    "그리고",
+    "하지만",
+    "또",
+    "내",
+    "나",
+    "너",
+    "우리",
+    "영상",
+    "유튜브",
+    "youtube",
+  ]);
+
+  const uniq: string[] = [];
+  for (const t of raw) {
+    if (t.length < 2) continue;
+    if (stop.has(t)) continue;
+    if (!uniq.includes(t)) uniq.push(t);
+    if (uniq.length >= 12) break;
+  }
+  return uniq;
+}
+
+function buildTranscriptSnippetsForAnswer(transcript: string, userText: string): string {
+  const lines = transcript.split("\n");
+  const keywords = extractKeywordsForSnippets(userText);
+  if (keywords.length === 0) return "";
+
+  const matches: number[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i].toLowerCase();
+    if (keywords.some((k) => l.includes(k))) {
+      matches.push(i);
+      if (matches.length >= 80) break;
+    }
+  }
+
+  if (matches.length === 0) return "";
+
+  const picked: string[] = [];
+  const seen = new Set<number>();
+  for (const idx of matches) {
+    for (const j of [idx - 1, idx, idx + 1]) {
+      if (j < 0 || j >= lines.length) continue;
+      if (seen.has(j)) continue;
+      seen.add(j);
+      picked.push(lines[j]);
+      if (picked.join("\n").length > 16_000) break;
+    }
+    if (picked.join("\n").length > 16_000) break;
+  }
+
+  return picked.join("\n").trim();
+}
+
+function extractTextFromOpenAIResponses(data: unknown): string {
+  const d = data as { output?: unknown };
+  const output = Array.isArray(d?.output) ? (d.output as Array<{ type?: unknown; content?: unknown }>) : [];
+  const msg = output.find((item) => item?.type === "message") as
+    | { content?: Array<{ text?: string }> }
+    | undefined;
+  const text = msg?.content?.map((c) => c.text ?? "").join("") ?? "";
+  return text;
+}
+
+async function answerPendingVideoQuestion(params: {
+  openaiApiKey: string;
+  question: string;
+  video: YouTubeVideo;
+  metaSummaryMd?: string;
+  transcriptText: string;
+}): Promise<string> {
+  const snippets = buildTranscriptSnippetsForAnswer(params.transcriptText, params.question);
+  const transcriptBlock = snippets || sampleTranscriptForAnalysis(params.transcriptText);
+
+  const system = [
+    "You are answering a user's question about a YouTube video.",
+    "",
+    "Rules:",
+    "- Answer ONLY the user's question. Do NOT output a general report, outline, or extra sections.",
+    "- Base your answer on the transcript lines provided (they include timestamps).",
+    "- If the needed detail is not present, say you can't confirm that exact detail yet.",
+    "- When referencing specific statements, include the nearest timestamp like [MM:SS].",
+    "- Answer in Korean. Be concise.",
+    "",
+    `Title: ${params.video.title ?? ""}`,
+    `Channel: ${params.video.channelTitle ?? ""}`,
+    `URL: ${params.video.url}`,
+    params.metaSummaryMd ? "" : "",
+    params.metaSummaryMd ? "Metadata summary:" : "",
+    params.metaSummaryMd ? params.metaSummaryMd : "",
+    "",
+    "Transcript lines (timestamped):",
+    transcriptBlock,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  const res = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${params.openaiApiKey}`,
+    },
+    body: JSON.stringify({
+      model: "gpt-5.2-2025-12-11",
+      input: [
+        { role: "system", content: system },
+        { role: "user", content: params.question },
+      ],
+      reasoning: { effort: "none" },
+      text: { verbosity: "medium" },
+      max_output_tokens: 900,
+    }),
+  });
+
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = json as { error?: { message?: unknown } };
+    const msg = typeof err?.error?.message === "string" ? err.error.message : `OpenAI error (${res.status})`;
+    throw new Error(msg);
+  }
+
+  return extractTextFromOpenAIResponses(json).trim();
 }
 
 function buildAnalysisMarkdown(args: {
@@ -675,6 +835,82 @@ export async function POST(request: Request) {
         } catch {
           // ignore
         }
+      }
+
+      // If transcript is now ready, answer any queued questions (data-based).
+      try {
+        const { data: jobs } = await supabase
+          .from("video_answer_jobs")
+          .select("id,assistant_message_id,question_text")
+          .eq("user_id", user.id)
+          .eq("session_id", body.sessionId)
+          .eq("video_id", videoId)
+          .eq("status", "pending")
+          .order("created_at", { ascending: true })
+          .limit(3);
+
+        if (Array.isArray(jobs) && jobs.length > 0) {
+          const openaiKey = await loadUserApiKey(user.id).catch(() => null);
+          const metaSummaryRes = await supabase
+            .from("video_contexts")
+            .select("summary_md")
+            .eq("user_id", user.id)
+            .eq("session_id", body.sessionId)
+            .eq("video_id", videoId)
+            .maybeSingle();
+          const metaSummaryMd =
+            typeof (metaSummaryRes as { data?: { summary_md?: unknown } }).data?.summary_md === "string"
+              ? ((metaSummaryRes as { data?: { summary_md?: string } }).data!.summary_md as string)
+              : "";
+
+          for (const job of jobs as Array<{ id: string; assistant_message_id: string; question_text: string }>) {
+            try {
+              if (!openaiKey) throw new Error("OpenAI API key not set");
+              if (!transcriptText.trim()) throw new Error("Transcript not ready");
+
+              const answer = await answerPendingVideoQuestion({
+                openaiApiKey: openaiKey,
+                question: job.question_text,
+                video,
+                metaSummaryMd,
+                transcriptText,
+              });
+
+              const final = `✅ 분석 완료\n\n${answer || "(응답 생성 실패)"}`;
+
+              await supabase
+                .from("chat_messages")
+                .update({ content: final })
+                .eq("id", job.assistant_message_id)
+                .eq("session_id", body.sessionId);
+
+              await supabase
+                .from("video_answer_jobs")
+                .update({ status: "completed", error: null })
+                .eq("id", job.id)
+                .eq("user_id", user.id);
+            } catch (e) {
+              const msg = e instanceof Error ? e.message : "Answer generation failed";
+              await supabase
+                .from("chat_messages")
+                .update({ content: `⚠️ 답변 생성 실패: ${msg}` })
+                .eq("id", job.assistant_message_id)
+                .eq("session_id", body.sessionId);
+              await supabase
+                .from("video_answer_jobs")
+                .update({ status: "failed", error: msg })
+                .eq("id", job.id)
+                .eq("user_id", user.id);
+            }
+          }
+
+          await supabase
+            .from("chat_sessions")
+            .update({ updated_at: new Date().toISOString() })
+            .eq("id", body.sessionId);
+        }
+      } catch {
+        // ignore job answering failures
       }
 
       await send("progress", { step: 3, total: 3, message: "✅ 준비 완료" });
