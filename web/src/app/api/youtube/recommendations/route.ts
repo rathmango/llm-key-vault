@@ -56,6 +56,10 @@ function clampInt(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+function clampFreshDays(days: number): number {
+  return clampInt(days, 1, 365);
+}
+
 function normalizeText(s: string): string {
   return s.toLowerCase();
 }
@@ -66,6 +70,40 @@ const CATEGORY_QUERIES: Record<Category, string> = {
   creator: "인스타 릴스 reels shorts 편집 캡컷",
   it: "개발 next.js react typescript ai",
 };
+
+function hashSeed(input: string): number {
+  // FNV-1a 32-bit
+  let h = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+function mulberry32(seed: number): () => number {
+  let t = seed >>> 0;
+  return () => {
+    t += 0x6d2b79f5;
+    let x = Math.imul(t ^ (t >>> 15), 1 | t);
+    x ^= x + Math.imul(x ^ (x >>> 7), 61 | x);
+    return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function pickDiverse<T>(items: T[], maxResults: number, seedStr: string): T[] {
+  if (items.length <= maxResults) return items;
+  const pin = Math.min(4, maxResults);
+  const head = items.slice(0, pin);
+  const tail = items.slice(pin);
+  const rand = mulberry32(hashSeed(seedStr));
+  // Fisher–Yates shuffle tail
+  for (let i = tail.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [tail[i], tail[j]] = [tail[j], tail[i]];
+  }
+  return head.concat(tail.slice(0, Math.max(0, maxResults - pin)));
+}
 
 function matchesCategory(item: YouTubeRecommendationItem, category: Category): boolean {
   const hay = normalizeText(`${item.title}\n${item.channelTitle}`);
@@ -260,7 +298,14 @@ async function fetchTrendingKR(apiKey: string): Promise<YouTubeRecommendationIte
   return out;
 }
 
-async function fetchSearchKR(apiKey: string, query: string): Promise<YouTubeRecommendationItem[]> {
+async function fetchSearchKR(
+  apiKey: string,
+  query: string,
+  opts?: {
+    order?: "viewCount" | "date";
+    freshDays?: number;
+  }
+): Promise<YouTubeRecommendationItem[]> {
   const url = new URL("https://www.googleapis.com/youtube/v3/search");
   url.searchParams.set("part", "snippet");
   url.searchParams.set("type", "video");
@@ -268,10 +313,13 @@ async function fetchSearchKR(apiKey: string, query: string): Promise<YouTubeReco
   url.searchParams.set("relevanceLanguage", "ko");
   url.searchParams.set("maxResults", "25");
   url.searchParams.set("safeSearch", "moderate");
-  url.searchParams.set("order", "viewCount");
+  const order = opts?.order ?? "viewCount";
+  url.searchParams.set("order", order);
 
-  // Keep things somewhat recent so the feed feels alive.
-  const publishedAfter = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString();
+  // Keep things recent so the feed feels alive.
+  // We default to 30d; if there aren't enough results in a niche category, the handler can widen it.
+  const freshDays = clampFreshDays(opts?.freshDays ?? 30);
+  const publishedAfter = new Date(Date.now() - freshDays * 24 * 60 * 60 * 1000).toISOString();
   url.searchParams.set("publishedAfter", publishedAfter);
 
   url.searchParams.set("q", query);
@@ -342,10 +390,47 @@ export async function GET(request: Request) {
     const now = Date.now();
     let cache = getCache(category);
     const bypassCache = refresh !== "" && refresh !== "0";
-    if (bypassCache || !cache || now - cache.fetchedAtMs > ttlMs) {
-      const items = await fetchSearchKR(apiKey, CATEGORY_QUERIES[category]);
+    // Decide “freshness + sort” strategy.
+    // Default: recent(30d) + popular(viewCount).
+    // On refresh: rotate strategies a bit to avoid “always the same” while staying recent & relevant.
+    const refreshSeedNum = Number.isFinite(Number(refresh)) ? Number(refresh) : hashSeed(refresh);
+    const refreshMode = bypassCache ? Math.abs(Math.trunc(refreshSeedNum)) % 3 : 0;
+
+    let order: "viewCount" | "date" = "viewCount";
+    let freshDays = 30;
+    if (bypassCache) {
+      if (refreshMode === 1) {
+        // Very fresh, newest first
+        order = "date";
+        freshDays = 14;
+      } else if (refreshMode === 2) {
+        // Slightly wider window, still popular
+        order = "viewCount";
+        freshDays = 60;
+      }
+    }
+
+    const loadAndCache = async (days: number) => {
+      const items = await fetchSearchKR(apiKey, CATEGORY_QUERIES[category], { order, freshDays: days });
       cache = { fetchedAtMs: now, items };
       setCache(category, cache);
+    };
+
+    if (bypassCache || !cache || now - cache.fetchedAtMs > ttlMs) {
+      await loadAndCache(freshDays);
+      // If the strict filter yields too few items, widen once (rare, but prevents empty lists).
+      const strictFilteredProbe = (cache?.items ?? []).filter((it) => matchesCategory(it, category));
+      if (strictFilteredProbe.length < Math.min(6, maxResults)) {
+        await loadAndCache(180);
+      }
+    }
+
+    // Ensure we always have a cache object before continuing (satisfies TS + avoids edge-case nulls).
+    if (!cache) {
+      await loadAndCache(freshDays);
+    }
+    if (!cache) {
+      throw new Error("Failed to load YouTube recommendations");
     }
 
     const items = cache.items;
@@ -353,14 +438,19 @@ export async function GET(request: Request) {
     // Apply keyword filter as a sanity check
     const strictFiltered = items.filter((it) => matchesCategory(it, category));
 
-    const picked = strictFiltered.slice(0, maxResults);
+    // Diversity: keep top few (still “popular”) but rotate the tail, so the list isn't identical every time.
+    // - No refresh: stable per day
+    // - Refresh: uses refresh seed
+    const dayKey = new Date().toISOString().slice(0, 10);
+    const seedStr = bypassCache ? `${category}:refresh:${refresh}` : `${category}:day:${dayKey}`;
+    const picked = pickDiverse(strictFiltered, maxResults, seedStr);
 
     return Response.json({
       items: picked,
       meta: {
         regionCode: "KR",
         category,
-        source: "search.list(type=video,order=viewCount,publishedAfter=180d)+keyword-sanity-filter",
+        source: `search.list(type=video,order=${order},publishedAfter≈${freshDays}d)+keyword-sanity-filter+diverse-pick`,
         query: CATEGORY_QUERIES[category],
         fetchedAt: new Date(cache.fetchedAtMs).toISOString(),
         ttlSeconds: Math.floor(ttlMs / 1000),
