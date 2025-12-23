@@ -1160,14 +1160,35 @@ function ChatView(props: {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>("");
   const [mobileSettingsOpen, setMobileSettingsOpen] = useState(false);
+  const [enterToSend, setEnterToSend] = useState(true);
   const [pendingImages, setPendingImages] = useState<string[]>([]);
   const [collapsedMessages, setCollapsedMessages] = useState(true); // Collapse old messages by default
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const isComposingRef = useRef(false);
+  const sendAfterCompositionEndRef = useRef(false);
 
   const WEB_SEARCH_MAX_RESULTS = 10;
+  const ENTER_TO_SEND_STORAGE_KEY = "llmkv:enterToSend";
+
+  useEffect(() => {
+    try {
+      const v = localStorage.getItem(ENTER_TO_SEND_STORAGE_KEY);
+      if (v === "0" || v === "1") setEnterToSend(v === "1");
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(ENTER_TO_SEND_STORAGE_KEY, enterToSend ? "1" : "0");
+    } catch {
+      // ignore
+    }
+  }, [enterToSend]);
   
   // Scroll handler for loading more messages
   const handleScroll = useCallback(() => {
@@ -1433,7 +1454,8 @@ function ChatView(props: {
         void (async () => {
           let metaContent = metaMessage.content;
           let gotMeta = false;
-          let metaVideo: any = null;
+          type MetaVideo = { title?: string; channelTitle?: string; url?: string; description?: string };
+          let metaVideo: MetaVideo | null = null;
           let readyNoteAppended = false;
 
           const applyMeta = () => {
@@ -1478,7 +1500,13 @@ function ChatView(props: {
                     applyMeta();
                   } else if (event.type === "metadata" && event.video) {
                     // Keep for fallback in case opener isn't available
-                    metaVideo = event.video;
+                    const v = event.video as Partial<MetaVideo>;
+                    metaVideo = {
+                      title: typeof v.title === "string" ? v.title : undefined,
+                      channelTitle: typeof v.channelTitle === "string" ? v.channelTitle : undefined,
+                      url: typeof v.url === "string" ? v.url : undefined,
+                      description: typeof v.description === "string" ? v.description : undefined,
+                    };
                   } else if (event.type === "complete") {
                     const ready = typeof event.ready === "boolean" ? event.ready : true;
                     if (ready && !readyNoteAppended) {
@@ -1696,10 +1724,47 @@ function ChatView(props: {
   }, [props.draft, loading]);
 
   function handleKeyDown(e: React.KeyboardEvent) {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      send();
+    if (e.key !== "Enter") return;
+
+    const isComposing = Boolean(e.nativeEvent.isComposing) || isComposingRef.current;
+    const wantsSend =
+      (enterToSend && !e.shiftKey) ||
+      (!enterToSend && !e.shiftKey && (e.metaKey || e.ctrlKey));
+
+    // If IME composition is in progress, don't send partial text.
+    // Queue the send until composition ends (so one Enter can still send).
+    if (isComposing && wantsSend) {
+      sendAfterCompositionEndRef.current = true;
+      return;
     }
+
+    if (enterToSend) {
+      // Enter: send, Shift+Enter: newline
+      if (e.shiftKey) return;
+      e.preventDefault();
+      void send();
+      return;
+    }
+
+    // Enter: newline, Ctrl/Cmd+Enter: send
+    if (!e.shiftKey && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      void send();
+    }
+  }
+
+  function handleCompositionStart() {
+    isComposingRef.current = true;
+  }
+
+  function handleCompositionEnd(e: React.CompositionEvent<HTMLTextAreaElement>) {
+    isComposingRef.current = false;
+    if (!sendAfterCompositionEndRef.current) return;
+    sendAfterCompositionEndRef.current = false;
+    if (loading) return;
+    const v = e.currentTarget.value ?? "";
+    if (!v.trim() && pendingImages.length === 0) return;
+    void send({ content: v });
   }
 
   return (
@@ -1757,6 +1822,13 @@ function ChatView(props: {
                 ))}
               </select>
             </div>
+            <button
+              onClick={() => setEnterToSend((v) => !v)}
+              className="rounded-lg border border-[var(--border)] bg-[var(--card)] px-2 py-1.5 text-xs text-[var(--muted)] outline-none transition hover:border-[var(--border-hover)] hover:text-[var(--foreground)]"
+              title="Enter 키 동작"
+            >
+              {enterToSend ? "Enter: 전송" : "Enter: 줄바꿈"}
+            </button>
           </div>
 
           {/* Mobile settings panel */}
@@ -1790,8 +1862,20 @@ function ChatView(props: {
                   ))}
                 </select>
               </div>
+              <div className="flex items-center gap-2">
+                <span className="w-10 text-xs text-[var(--muted)]">Enter</span>
+                <button
+                  onClick={() => setEnterToSend((v) => !v)}
+                  className="flex-1 rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-xs text-[var(--muted)] transition hover:border-[var(--border-hover)] hover:text-[var(--foreground)]"
+                >
+                  {enterToSend ? "전송" : "줄바꿈"}
+                </button>
+              </div>
               <div className="text-[11px] text-[var(--muted)]">
                 웹검색은 질문 내용(예: 오늘/최근/검색해줘)에 따라 자동으로만 사용돼요.
+              </div>
+              <div className="text-[11px] text-[var(--muted)]">
+                {enterToSend ? "Enter 전송 · Shift+Enter 줄바꿈" : "Enter 줄바꿈 · Ctrl/Cmd+Enter 전송(또는 오른쪽 버튼)"}
               </div>
             </div>
           )}
@@ -2040,6 +2124,8 @@ function ChatView(props: {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
+              onCompositionStart={handleCompositionStart}
+              onCompositionEnd={handleCompositionEnd}
               placeholder="메시지를 입력하세요..."
               rows={1}
               className="w-full resize-none bg-transparent px-4 py-3 pr-24 text-sm outline-none placeholder:text-[var(--muted)]"
@@ -2072,7 +2158,8 @@ function ChatView(props: {
             </div>
           </div>
           <div className="mt-2 text-center text-xs text-[var(--muted)]">
-            OpenAI · {props.model}
+            OpenAI · {props.model} ·{" "}
+            {enterToSend ? "Enter 전송 · Shift+Enter 줄바꿈" : "Enter 줄바꿈 · Ctrl/Cmd+Enter 전송"}
           </div>
         </div>
       </div>
