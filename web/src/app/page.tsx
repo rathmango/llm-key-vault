@@ -328,7 +328,9 @@ function formatRelativeTime(date: Date): string {
 export default function Home() {
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
   const [session, setSession] = useState<Session | null>(null);
-  const [activeTab, setActiveTab] = useState<"home" | "chat" | "keys">("chat");
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authError, setAuthError] = useState<string>("");
+  const [activeTab, setActiveTab] = useState<"home" | "chat" | "keys">("home");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [draft, setDraft] = useState<Draft | null>(null);
   
@@ -343,17 +345,96 @@ export default function Home() {
     if (!supabase) return;
     let mounted = true;
 
-    supabase.auth.getSession().then(({ data }) => {
-      if (mounted) setSession(data.session);
-    });
+    const cleanAuthUrl = () => {
+      try {
+        const u = new URL(window.location.href);
+        const keys = ["code", "state", "error", "error_description", "error_code"];
+        const had = keys.some((k) => u.searchParams.has(k)) || Boolean(u.hash);
+        for (const k of keys) u.searchParams.delete(k);
+        u.hash = "";
+        if (had) {
+          const qs = u.searchParams.toString();
+          window.history.replaceState({}, document.title, u.pathname + (qs ? `?${qs}` : ""));
+        }
+      } catch {
+        // ignore
+      }
+    };
+
+    const bootstrap = async () => {
+      setAuthLoading(true);
+      setAuthError("");
+
+      try {
+        // If the OAuth provider redirected back with an error, surface it.
+        try {
+          const u = new URL(window.location.href);
+          const err = u.searchParams.get("error_description") || u.searchParams.get("error");
+          if (err && mounted) setAuthError(decodeURIComponent(err));
+        } catch {
+          // ignore
+        }
+
+        // First pass: load existing session (also lets Supabase process OAuth redirect if configured).
+        const first = await supabase.auth.getSession();
+        if (!mounted) return;
+        setSession(first.data.session);
+
+        // Fallback: if we're on an OAuth callback URL and session is still empty, explicitly exchange code.
+        if (!first.data.session) {
+          try {
+            const u = new URL(window.location.href);
+            const code = u.searchParams.get("code");
+            if (code) {
+              const exchanged = await supabase.auth.exchangeCodeForSession(code);
+              if (exchanged.error && mounted) setAuthError(exchanged.error.message);
+              const after = await supabase.auth.getSession();
+              if (!mounted) return;
+              setSession(after.data.session);
+            }
+          } catch {
+            // ignore
+          }
+        }
+
+        // Prevent “login loop” caused by lingering OAuth params in the URL.
+        cleanAuthUrl();
+      } finally {
+        if (mounted) setAuthLoading(false);
+      }
+    };
+
+    void bootstrap();
 
     const { data } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      if (!mounted) return;
       setSession(newSession);
+      // Once we get a definitive auth event, stop showing the loading gate.
+      setAuthLoading(false);
     });
+
+    const refreshOnReturn = async () => {
+      try {
+        const { data: s } = await supabase.auth.getSession();
+        if (mounted) setSession(s.session);
+      } catch {
+        // ignore
+      }
+    };
+
+    const onFocus = () => void refreshOnReturn();
+    const onVis = () => {
+      if (document.visibilityState === "visible") void refreshOnReturn();
+    };
+
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVis);
 
     return () => {
       mounted = false;
       data.subscription.unsubscribe();
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVis);
     };
   }, [supabase]);
 
@@ -485,6 +566,8 @@ export default function Home() {
 
   async function signInWithGoogle() {
     if (!supabase) return;
+    setAuthLoading(true);
+    setAuthError("");
     await supabase.auth.signInWithOAuth({
       provider: "google",
       options: { redirectTo: window.location.origin },
@@ -592,6 +675,20 @@ export default function Home() {
     );
   }
 
+  if (authLoading) {
+    return (
+      <div className="flex h-[100dvh] items-center justify-center bg-[#0f0f10]">
+        <div className="max-w-sm rounded-2xl border border-[#27272a] bg-[#18181b] p-8 text-center animate-fade-in">
+          <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-[#7c3aed]/20">
+            <IconKey />
+          </div>
+          <h1 className="text-xl font-semibold text-[#e4e4e7]">로그인 확인 중…</h1>
+          <p className="mt-2 text-sm text-[#71717a]">잠시만 기다려줘</p>
+        </div>
+      </div>
+    );
+  }
+
   if (!user) {
     return (
       <div className="flex h-[100dvh] items-center justify-center bg-[#0f0f10]">
@@ -603,6 +700,11 @@ export default function Home() {
           <p className="mt-2 text-sm text-[#71717a]">
             내 API Key로 여러 LLM을 한 곳에서 관리하고 채팅하세요
           </p>
+          {authError && (
+            <div className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+              {authError}
+            </div>
+          )}
           <button
             onClick={signInWithGoogle}
             className="mt-6 w-full rounded-xl bg-white px-4 py-3 text-sm font-medium text-black transition hover:bg-zinc-100"
@@ -647,6 +749,7 @@ export default function Home() {
           <button
             onClick={() => {
               createNewSession();
+              setActiveTab("chat");
               setSidebarOpen(false);
             }}
             className="flex w-full items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-3 text-sm font-medium transition hover:border-[var(--border-hover)] hover:bg-[var(--card-hover)] active:scale-[0.98]"
